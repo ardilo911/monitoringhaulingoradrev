@@ -26,3 +26,8 @@ export function metersToChainage(meters: number): string {
 export function segmentLength(kmStart: string, kmFinish: string): number {
   return chainageToMeters(kmFinish) - chainageToMeters(kmStart);
 }
+
+/** Geser sebuah chainage sejauh N meter (bisa negatif). Dipakai untuk overlap Double Coat. */
+export function shiftChainage(value: string, deltaMeters: number): string {
+  return metersToChainage(chainageToMeters(value) + deltaMeters);
+}

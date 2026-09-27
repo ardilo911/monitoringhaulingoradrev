@@ -24,6 +24,9 @@ do $$ begin
   create type work_item_type as enum ('Recycling', 'Reseal 1 Coat', 'Reseal 2 Coat', 'Reseal Selected', 'Upgrading');
 exception when duplicate_object then null; end $$;
 
+-- Tambalan sekarang jadi pilihan Work Item tersendiri (titik tunggal, bukan rentang KM)
+alter type work_item_type add value if not exists 'Tambalan';
+
 do $$ begin
   create type line_type as enum ('UL', 'LL', 'LL1', 'LL2');
 exception when duplicate_object then null; end $$;
@@ -57,8 +60,10 @@ create table if not exists profiles (
 -- Kalau tabel profiles sudah pernah dibuat dari versi sebelumnya (tanpa kolom email), tambahkan:
 alter table profiles add column if not exists email text;
 do $$ begin
-  alter table profiles add constraint profiles_email_key unique (email);
-exception when duplicate_object then null; end $$;
+  if not exists (select 1 from pg_constraint where conname = 'profiles_email_key') then
+    alter table profiles add constraint profiles_email_key unique (email);
+  end if;
+end $$;
 
 -- Trigger: bikin baris profile otomatis saat user baru dibuat di Supabase Auth
 create or replace function public.handle_new_user()
@@ -123,6 +128,9 @@ create table if not exists work_records (
   km_finish text not null,
   area_nama text,
   line line_type not null,
+  lebar numeric not null default 0,
+  panjang_override numeric, -- hanya dipakai untuk kategori 'tambalan'
+  volume_kg numeric not null default 0, -- hanya relevan untuk kategori 'tambalan'
   capex_p numeric default 0, capex_l numeric default 0,
   opex_p numeric default 0, opex_l numeric default 0,
   reseal2_p numeric default 0, reseal2_l numeric default 0,
@@ -134,6 +142,11 @@ create table if not exists work_records (
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
+
+-- Kalau tabel sudah ada dari versi sebelumnya, tambahkan kolom baru:
+alter table work_records add column if not exists lebar numeric not null default 0;
+alter table work_records add column if not exists panjang_override numeric;
+alter table work_records add column if not exists volume_kg numeric not null default 0;
 
 -- ---------- BAST ----------
 create table if not exists bast (

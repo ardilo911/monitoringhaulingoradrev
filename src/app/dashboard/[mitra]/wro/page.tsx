@@ -3,9 +3,10 @@
 import { useEffect, useMemo, useState } from "react";
 import { useParams } from "next/navigation";
 import { supabase } from "@/lib/supabaseClient";
+import { useSession } from "@/lib/useSession";
 import { chainageToMeters, isValidChainage, segmentLength } from "@/lib/chainage";
 import { formatNumberID } from "@/lib/format";
-import { WORK_ITEMS, LINES, type Wro, type Mitra, type WorkItem, type LineType, type WroStatus } from "@/lib/types";
+import { WRO_WORK_ITEMS, LINES, type Wro, type Mitra, type WorkItem, type LineType, type WroStatus } from "@/lib/types";
 import { Button } from "@/components/ui/Button";
 import { Input, Select, Field } from "@/components/ui/Input";
 import { Modal } from "@/components/ui/Modal";
@@ -15,6 +16,10 @@ import { ExportButtons } from "@/components/ExportButtons";
 function currentPeriode() {
   const d = new Date();
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+}
+
+function todayStr() {
+  return new Date().toISOString().slice(0, 10);
 }
 
 const emptyForm = {
@@ -32,6 +37,8 @@ const emptyForm = {
 export default function WroPage() {
   const params = useParams<{ mitra: string }>();
   const mitra = params.mitra as Mitra;
+  const { profile } = useSession();
+  const isAdmin = profile?.role === "admin";
 
   const [periode, setPeriode] = useState(currentPeriode());
   const [rows, setRows] = useState<Wro[]>([]);
@@ -96,6 +103,19 @@ export default function WroPage() {
     setModalOpen(true);
   }
 
+  function handleStatusChange(status: WroStatus) {
+    setForm((f) => ({
+      ...f,
+      status,
+      // Tanggal approve terisi otomatis pada hari status diubah ke Approve; dikosongkan lagi kalau dibatalkan.
+      tgl_approve: status === "Approve" ? (f.tgl_approve || todayStr()) : "",
+    }));
+  }
+
+  function canModify(row: Wro): boolean {
+    return isAdmin || row.status === "Process";
+  }
+
   async function handleSave(e: React.FormEvent) {
     e.preventDefault();
     setFormError(null);
@@ -114,13 +134,11 @@ export default function WroPage() {
     }
     const panjang = segmentLength(form.km_start, form.km_finish);
 
-    const payload = {
+    const payload: Record<string, unknown> = {
       mitra,
       periode,
       nomer_wro: form.nomer_wro,
       tgl_submit: form.tgl_submit || null,
-      tgl_approve: form.tgl_approve || null,
-      status: form.status,
       km_start: form.km_start,
       km_finish: form.km_finish,
       line: form.line,
@@ -128,6 +146,14 @@ export default function WroPage() {
       lebar,
       work_item: form.work_item,
     };
+    // Status & tanggal approve hanya admin yang boleh ubah - mitra selalu submit sebagai Process.
+    if (isAdmin) {
+      payload.status = form.status;
+      payload.tgl_approve = form.status === "Approve" ? (form.tgl_approve || todayStr()) : null;
+    } else if (!editingId) {
+      payload.status = "Process";
+      payload.tgl_approve = null;
+    }
 
     if (editingId) {
       await supabase.from("wro").update(payload).eq("id", editingId);
@@ -144,30 +170,19 @@ export default function WroPage() {
     load();
   }
 
+  const approvedRows = useMemo(() => rows.filter((r) => r.status === "Approve"), [rows]);
+
   const summary = useMemo(() => {
     const totals: Record<WorkItem, number> = {
-      Recycling: 0,
-      "Reseal 1 Coat": 0,
-      "Reseal 2 Coat": 0,
-      "Reseal Selected": 0,
-      Upgrading: 0,
+      Recycling: 0, "Reseal 1 Coat": 0, "Reseal 2 Coat": 0, "Reseal Selected": 0, Upgrading: 0, Tambalan: 0,
     };
-    for (const r of rows) totals[r.work_item] += r.luasan;
+    for (const r of approvedRows) totals[r.work_item] += r.luasan;
     return totals;
-  }, [rows]);
+  }, [approvedRows]);
 
   const exportRows = rows.map((r) => [
-    r.nomer_wro,
-    r.tgl_submit ?? "-",
-    r.tgl_approve ?? "-",
-    r.status,
-    r.km_start,
-    r.km_finish,
-    r.line,
-    formatNumberID(r.panjang, 1),
-    formatNumberID(r.lebar, 1),
-    formatNumberID(r.luasan, 1),
-    r.work_item,
+    r.nomer_wro, r.tgl_submit ?? "-", r.tgl_approve ?? "-", r.status,
+    r.km_start, r.km_finish, r.line, formatNumberID(r.panjang, 1), formatNumberID(r.lebar, 1), formatNumberID(r.luasan, 1), r.work_item,
   ]);
 
   return (
@@ -175,7 +190,10 @@ export default function WroPage() {
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
           <h1 className="text-lg font-semibold text-graphite-900">Work Request Order</h1>
-          <p className="text-sm text-gray-500">Pengajuan pekerjaan perawatan hauling road.</p>
+          <p className="text-sm text-gray-500">
+            Pengajuan pekerjaan perawatan hauling road.
+            {!isAdmin && " Status & tanggal approve ditentukan oleh Admin."}
+          </p>
         </div>
         <div className="flex items-end gap-3">
           <Field label="Periode">
@@ -195,24 +213,13 @@ export default function WroPage() {
         <table className="data-table">
           <thead>
             <tr>
-              <th>No WRO</th>
-              <th>Submit</th>
-              <th>Approve</th>
-              <th>Status</th>
-              <th>KM Start</th>
-              <th>KM Finish</th>
-              <th>Line</th>
-              <th>Panjang (m)</th>
-              <th>Lebar (m)</th>
-              <th>Luasan (m²)</th>
-              <th>Work Item</th>
-              <th></th>
+              <th>No WRO</th><th>Submit</th><th>Approve</th><th>Status</th>
+              <th>KM Start</th><th>KM Finish</th><th>Line</th>
+              <th>Panjang (m)</th><th>Lebar (m)</th><th>Luasan (m²)</th><th>Work Item</th><th></th>
             </tr>
           </thead>
           <tbody>
-            {loading && (
-              <tr><td colSpan={12} className="py-6 text-center text-gray-400">Memuat...</td></tr>
-            )}
+            {loading && <tr><td colSpan={12} className="py-6 text-center text-gray-400">Memuat...</td></tr>}
             {!loading && rows.length === 0 && (
               <tr><td colSpan={12} className="py-8 text-center text-gray-400">Belum ada data WRO pada periode ini.</td></tr>
             )}
@@ -230,8 +237,14 @@ export default function WroPage() {
                 <td>{formatNumberID(r.luasan, 1)}</td>
                 <td>{r.work_item}</td>
                 <td className="space-x-2">
-                  <button className="text-signal-blue hover:underline" onClick={() => openEdit(r)}>Ubah</button>
-                  <button className="text-signal-red hover:underline" onClick={() => handleDelete(r.id)}>Hapus</button>
+                  {canModify(r) ? (
+                    <>
+                      <button className="text-signal-blue hover:underline" onClick={() => openEdit(r)}>Ubah</button>
+                      <button className="text-signal-red hover:underline" onClick={() => handleDelete(r.id)}>Hapus</button>
+                    </>
+                  ) : (
+                    <span className="text-xs text-gray-400">Terkunci (sudah Approve)</span>
+                  )}
                 </td>
               </tr>
             ))}
@@ -239,17 +252,19 @@ export default function WroPage() {
         </table>
       </div>
 
-      <div className="rounded-lg border border-gray-200 bg-white p-4">
-        <h3 className="mb-3 text-sm font-semibold text-graphite-900">Ringkasan Luasan per Work Item</h3>
-        <div className="grid grid-cols-2 gap-3 md:grid-cols-5">
-          {WORK_ITEMS.map((wi) => (
-            <div key={wi} className="rounded-md bg-asphalt-50 p-3">
-              <div className="text-xs text-gray-500">{wi}</div>
-              <div className="mt-1 text-base font-semibold text-graphite-900">{formatNumberID(summary[wi], 1)} m²</div>
-            </div>
-          ))}
+      {approvedRows.length > 0 && (
+        <div className="rounded-lg border border-gray-200 bg-white p-4">
+          <h3 className="mb-3 text-sm font-semibold text-graphite-900">Ringkasan Luasan per Work Item (yang sudah Approve)</h3>
+          <div className="grid grid-cols-2 gap-3 md:grid-cols-5">
+            {WRO_WORK_ITEMS.map((wi) => (
+              <div key={wi} className="rounded-md bg-asphalt-50 p-3">
+                <div className="text-xs text-gray-500">{wi}</div>
+                <div className="mt-1 text-base font-semibold text-graphite-900">{formatNumberID(summary[wi], 1)} m²</div>
+              </div>
+            ))}
+          </div>
         </div>
-      </div>
+      )}
 
       {modalOpen && (
         <Modal title={editingId ? "Ubah WRO" : "Tambah WRO"} onClose={() => setModalOpen(false)}>
@@ -261,16 +276,24 @@ export default function WroPage() {
               <Field label="Date of Submission">
                 <Input type="date" value={form.tgl_submit} onChange={(e) => setForm({ ...form, tgl_submit: e.target.value })} />
               </Field>
-              <Field label="Date of Approval">
-                <Input type="date" value={form.tgl_approve} onChange={(e) => setForm({ ...form, tgl_approve: e.target.value })} />
-              </Field>
+              {isAdmin && (
+                <Field label="Date of Approval (otomatis)">
+                  <Input type="date" value={form.tgl_approve} disabled className="bg-asphalt-50 text-gray-500" />
+                </Field>
+              )}
             </div>
-            <Field label="Status WRO">
-              <Select value={form.status} onChange={(e) => setForm({ ...form, status: e.target.value as WroStatus })}>
-                <option value="Process">Process</option>
-                <option value="Approve">Approve</option>
-              </Select>
-            </Field>
+            {isAdmin ? (
+              <Field label="Status WRO">
+                <Select value={form.status} onChange={(e) => handleStatusChange(e.target.value as WroStatus)}>
+                  <option value="Process">Process</option>
+                  <option value="Approve">Approve</option>
+                </Select>
+              </Field>
+            ) : (
+              <div className="rounded-md bg-asphalt-50 px-3 py-2 text-sm text-gray-500">
+                Status: <Badge tone="amber">Process</Badge> — menunggu approval Admin.
+              </div>
+            )}
             <div className="grid grid-cols-2 gap-3">
               <Field label="KM Start (format 10+050)">
                 <Input required placeholder="10+050" value={form.km_start} onChange={(e) => setForm({ ...form, km_start: e.target.value })} />
@@ -295,7 +318,7 @@ export default function WroPage() {
             </div>
             <Field label="Work Item">
               <Select value={form.work_item} onChange={(e) => setForm({ ...form, work_item: e.target.value as WorkItem })}>
-                {WORK_ITEMS.map((w) => <option key={w} value={w}>{w}</option>)}
+                {WRO_WORK_ITEMS.map((w) => <option key={w} value={w}>{w}</option>)}
               </Select>
             </Field>
             {formError && <p className="text-sm text-signal-red">{formError}</p>}

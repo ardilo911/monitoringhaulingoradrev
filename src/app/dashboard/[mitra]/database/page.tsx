@@ -5,9 +5,13 @@ import { useParams } from "next/navigation";
 import { supabase } from "@/lib/supabaseClient";
 import { useSession } from "@/lib/useSession";
 import { formatNumberID, formatDateID, lastNPeriods, monthLabelID } from "@/lib/format";
+import { isValidChainage, chainageToMeters, segmentLength } from "@/lib/chainage";
+import { generateWorkRows, rowPanjang, rowArea } from "@/lib/workGeneration";
 import {
   WORK_ITEMS,
   LINES,
+  AREA_OPTIONS,
+  KETERANGAN_OPTIONS,
   REKAP_KATEGORI_LABEL,
   type WorkRecord,
   type Mitra,
@@ -36,17 +40,15 @@ const KATEGORI_TABS: (RekapKategori | "periode")[] = [
 
 const emptyForm = {
   work_date: "",
+  remark_pekerjaan: "Recycling" as WorkItem,
   km_start: "",
   km_finish: "",
-  area_nama: "",
   line: "UL" as LineType,
-  capex_p: "", capex_l: "",
-  opex_p: "", opex_l: "",
-  reseal2_p: "", reseal2_l: "",
-  repair_p: "", repair_l: "",
-  opname_p: "", opname_l: "",
-  keterangan: "",
-  remark_pekerjaan: "Recycling" as WorkItem,
+  lebar: "",
+  panjang_tambalan: "",
+  volume_kg: "",
+  area_nama: AREA_OPTIONS[0] as string,
+  keterangan: KETERANGAN_OPTIONS[0] as string,
 };
 
 export default function DatabasePage() {
@@ -68,6 +70,7 @@ export default function DatabasePage() {
   const rangeStart = `${periods[0]}-01`;
   const rangeEndDate = new Date(Number(periode.split("-")[0]), Number(periode.split("-")[1]), 0);
   const rangeEnd = rangeEndDate.toISOString().slice(0, 10);
+  const isTambalanForm = form.remark_pekerjaan === "Tambalan";
 
   async function load() {
     setLoading(true);
@@ -93,11 +96,18 @@ export default function DatabasePage() {
     const totals: Record<RekapKategori, number> = {
       double_coat: 0, reseal_1_coat: 0, heavy_patches_recycling: 0, heavy_patches_upgrading: 0, tambalan: 0,
     };
-    for (const r of rows) totals[r.kategori] += r.capex_p * r.capex_l + r.opex_p * r.opex_l + r.reseal2_p * r.reseal2_l;
+    for (const r of rows) totals[r.kategori] += rowArea(r);
     return totals;
   }, [rows]);
 
-  const n = (v: string) => (v.trim() === "" ? 0 : parseFloat(v));
+  const panjangPreview = useMemo(() => {
+    if (isTambalanForm) return parseFloat(form.panjang_tambalan) || null;
+    if (isValidChainage(form.km_start) && isValidChainage(form.km_finish)) {
+      const p = segmentLength(form.km_start, form.km_finish);
+      return p > 0 ? p : null;
+    }
+    return null;
+  }, [form.km_start, form.km_finish, form.panjang_tambalan, isTambalanForm]);
 
   function openAdd() {
     setEditingId(null);
@@ -110,17 +120,15 @@ export default function DatabasePage() {
     setEditingId(row.id);
     setForm({
       work_date: row.work_date,
-      km_start: row.km_start,
-      km_finish: row.km_finish,
-      area_nama: row.area_nama ?? "",
-      line: row.line,
-      capex_p: String(row.capex_p), capex_l: String(row.capex_l),
-      opex_p: String(row.opex_p), opex_l: String(row.opex_l),
-      reseal2_p: String(row.reseal2_p), reseal2_l: String(row.reseal2_l),
-      repair_p: String(row.repair_p), repair_l: String(row.repair_l),
-      opname_p: String(row.opname_p), opname_l: String(row.opname_l),
-      keterangan: row.keterangan ?? "",
       remark_pekerjaan: row.remark_pekerjaan,
+      km_start: row.km_start,
+      km_finish: row.kategori === "tambalan" ? "" : row.km_finish,
+      line: row.line,
+      lebar: String(row.lebar),
+      panjang_tambalan: row.kategori === "tambalan" ? String(row.panjang_override ?? 0) : "",
+      volume_kg: String(row.volume_kg ?? 0),
+      area_nama: row.area_nama ?? AREA_OPTIONS[0],
+      keterangan: row.keterangan ?? KETERANGAN_OPTIONS[0],
     });
     setFormError(null);
     setModalOpen(true);
@@ -129,35 +137,48 @@ export default function DatabasePage() {
   async function handleSave(e: React.FormEvent) {
     e.preventDefault();
     setFormError(null);
-    const kategori = tab === "periode" ? rows.find((r) => r.id === editingId)?.kategori : (tab as RekapKategori);
-    if (!kategori) {
-      setFormError("Pilih tab kategori (bukan 'Periode') untuk menambah data baru.");
-      return;
+    if (!form.work_date) { setFormError("Tanggal wajib diisi."); return; }
+    const lebar = parseFloat(form.lebar);
+    if (isNaN(lebar) || lebar <= 0) { setFormError("Lebar wajib diisi angka lebih dari 0."); return; }
+
+    if (isTambalanForm) {
+      if (!isValidChainage(form.km_start)) { setFormError("Format KM harus XX+XXX."); return; }
+    } else {
+      if (!isValidChainage(form.km_start) || !isValidChainage(form.km_finish)) { setFormError("Format KM harus XX+XXX."); return; }
+      if (chainageToMeters(form.km_finish) <= chainageToMeters(form.km_start)) { setFormError("KM Finish harus lebih besar dari KM Start."); return; }
     }
-    if (!form.work_date || !form.km_start || !form.km_finish) {
-      setFormError("Tanggal, KM Start, dan KM Finish wajib diisi.");
-      return;
-    }
-    const payload = {
-      mitra,
-      work_date: form.work_date,
-      kategori,
-      km_start: form.km_start,
-      km_finish: form.km_finish,
-      area_nama: form.area_nama || null,
-      line: form.line,
-      capex_p: n(form.capex_p), capex_l: n(form.capex_l),
-      opex_p: n(form.opex_p), opex_l: n(form.opex_l),
-      reseal2_p: n(form.reseal2_p), reseal2_l: n(form.reseal2_l),
-      repair_p: n(form.repair_p), repair_l: n(form.repair_l),
-      opname_p: n(form.opname_p), opname_l: n(form.opname_l),
-      keterangan: form.keterangan || null,
-      remark_pekerjaan: form.remark_pekerjaan,
-    };
+
     if (editingId) {
+      const existing = rows.find((r) => r.id === editingId);
+      if (!existing) { setModalOpen(false); return; }
+      const payload: Partial<WorkRecord> = {
+        work_date: form.work_date,
+        remark_pekerjaan: form.remark_pekerjaan,
+        km_start: form.km_start,
+        km_finish: existing.kategori === "tambalan" ? form.km_start : form.km_finish,
+        line: form.line,
+        lebar,
+        panjang_override: existing.kategori === "tambalan" ? parseFloat(form.panjang_tambalan) : null,
+        volume_kg: existing.kategori === "tambalan" ? parseFloat(form.volume_kg || "0") : 0,
+        area_nama: form.area_nama,
+        keterangan: form.keterangan,
+      };
       await supabase.from("work_records").update(payload).eq("id", editingId);
     } else {
-      await supabase.from("work_records").insert(payload);
+      const generated = generateWorkRows({
+        mitra,
+        work_date: form.work_date,
+        km_start: form.km_start,
+        km_finish: isTambalanForm ? form.km_start : form.km_finish,
+        line: form.line,
+        lebar,
+        area_nama: form.area_nama,
+        keterangan: form.keterangan,
+        remark_pekerjaan: form.remark_pekerjaan,
+        panjang_override: isTambalanForm ? parseFloat(form.panjang_tambalan) : null,
+        volume_kg: isTambalanForm ? parseFloat(form.volume_kg || "0") : 0,
+      });
+      await supabase.from("work_records").insert(generated);
     }
     setModalOpen(false);
     load();
@@ -170,10 +191,10 @@ export default function DatabasePage() {
   }
 
   const exportRows = rowsForTab.map((r) => [
-    formatDateID(r.work_date), r.km_start, r.km_finish, r.area_nama ?? "-", r.line,
-    formatNumberID(r.capex_p * r.capex_l, 1), formatNumberID(r.opex_p * r.opex_l, 1),
-    formatNumberID(r.reseal2_p * r.reseal2_l, 1), formatNumberID(r.repair_p * r.repair_l, 1),
-    formatNumberID(r.opname_p * r.opname_l, 1), r.keterangan ?? "-", r.remark_pekerjaan,
+    formatDateID(r.work_date),
+    r.kategori === "tambalan" ? r.km_start : `${r.km_start} - ${r.km_finish}`,
+    formatNumberID(rowPanjang(r), 1), formatNumberID(r.lebar, 1), formatNumberID(rowArea(r), 1),
+    r.line, r.area_nama ?? "-", r.keterangan ?? "-", r.remark_pekerjaan,
   ]);
 
   return (
@@ -191,16 +212,14 @@ export default function DatabasePage() {
             <Input type="month" value={periode} onChange={(e) => setPeriode(e.target.value)} />
           </Field>
           {tab !== "periode" && (
-            <>
-              <ExportButtons
-                filename={`database-${tab}-${mitra}-${periode}`}
-                title={`Database ${REKAP_KATEGORI_LABEL[tab as RekapKategori]} ${mitra.toUpperCase()} (6 bulan s.d ${periode})`}
-                columns={["Tgl", "KM Start", "KM Finish", "Area", "Line", "CAPEX Luas", "OPEX Luas", "Reseal2 Luas", "Repair Luas", "Opname Luas", "Keterangan", "Remark"]}
-                rows={exportRows}
-              />
-              {isAdmin && <Button onClick={openAdd}>+ Tambah Pekerjaan</Button>}
-            </>
+            <ExportButtons
+              filename={`database-${tab}-${mitra}-${periode}`}
+              title={`Database ${REKAP_KATEGORI_LABEL[tab as RekapKategori]} ${mitra.toUpperCase()} (6 bulan s.d ${periode})`}
+              columns={["Tgl", "KM", "Panjang (m)", "Lebar (m)", "Luas (m2)", "Line", "Area", "Keterangan", "Remark"]}
+              rows={exportRows}
+            />
           )}
+          {isAdmin && <Button onClick={openAdd}>+ Tambah Pekerjaan</Button>}
         </div>
       </div>
 
@@ -229,38 +248,35 @@ export default function DatabasePage() {
               </div>
             ))}
           </div>
-          <p className="mt-3 text-xs text-gray-400">Klik salah satu tab kategori di atas untuk melihat detail{isAdmin ? " & menambah data" : ""}.</p>
         </div>
       ) : (
         <div className="scroll-x rounded-lg border border-gray-200 bg-white">
           <table className="data-table">
             <thead>
               <tr>
-                <th>Tgl</th><th>KM Start</th><th>KM Finish</th><th>Area</th><th>Line</th>
-                <th>CAPEX Luas</th><th>OPEX Luas</th><th>Reseal2 Luas</th><th>Repair Luas</th><th>Opname Luas</th>
-                <th>Keterangan</th><th>Remark</th>
+                <th>Tgl</th><th>KM</th><th>Panjang (m)</th><th>Lebar (m)</th><th>Luas (m²)</th>
+                <th>Line</th><th>Area</th><th>Keterangan</th><th>Remark</th>
+                {tab === "tambalan" && <th>Volume (kg)</th>}
                 {isAdmin && <th></th>}
               </tr>
             </thead>
             <tbody>
-              {loading && <tr><td colSpan={13} className="py-6 text-center text-gray-400">Memuat...</td></tr>}
+              {loading && <tr><td colSpan={11} className="py-6 text-center text-gray-400">Memuat...</td></tr>}
               {!loading && rowsForTab.length === 0 && (
-                <tr><td colSpan={13} className="py-8 text-center text-gray-400">Tidak ada data pada rentang 6 bulan ini.</td></tr>
+                <tr><td colSpan={11} className="py-8 text-center text-gray-400">Tidak ada data pada rentang 6 bulan ini.</td></tr>
               )}
               {rowsForTab.map((r) => (
                 <tr key={r.id}>
                   <td>{formatDateID(r.work_date)}</td>
-                  <td className="chainage">{r.km_start}</td>
-                  <td className="chainage">{r.km_finish}</td>
-                  <td>{r.area_nama ?? "-"}</td>
+                  <td className="chainage">{r.kategori === "tambalan" ? r.km_start : `${r.km_start} – ${r.km_finish}`}</td>
+                  <td>{formatNumberID(rowPanjang(r), 1)}</td>
+                  <td>{formatNumberID(r.lebar, 1)}</td>
+                  <td className="font-medium">{formatNumberID(rowArea(r), 1)}</td>
                   <td>{r.line}</td>
-                  <td>{formatNumberID(r.capex_p * r.capex_l, 1)}</td>
-                  <td>{formatNumberID(r.opex_p * r.opex_l, 1)}</td>
-                  <td>{formatNumberID(r.reseal2_p * r.reseal2_l, 1)}</td>
-                  <td>{formatNumberID(r.repair_p * r.repair_l, 1)}</td>
-                  <td>{formatNumberID(r.opname_p * r.opname_l, 1)}</td>
-                  <td className="max-w-[160px] truncate">{r.keterangan ?? "-"}</td>
+                  <td>{r.area_nama ?? "-"}</td>
+                  <td>{r.keterangan ?? "-"}</td>
                   <td>{r.remark_pekerjaan}</td>
+                  {tab === "tambalan" && <td>{formatNumberID(r.volume_kg, 1)}</td>}
                   {isAdmin && (
                     <td className="space-x-2">
                       <button className="text-signal-blue hover:underline" onClick={() => openEdit(r)}>Ubah</button>
@@ -277,47 +293,65 @@ export default function DatabasePage() {
       {modalOpen && isAdmin && (
         <Modal title={editingId ? "Ubah Pekerjaan (Database)" : "Tambah Pekerjaan (Database)"} onClose={() => setModalOpen(false)} width="max-w-2xl">
           <form onSubmit={handleSave} className="space-y-4">
-            <div className="grid grid-cols-3 gap-3">
+            <div className="grid grid-cols-2 gap-3">
               <Field label="Tanggal">
                 <Input required type="date" value={form.work_date} onChange={(e) => setForm({ ...form, work_date: e.target.value })} />
               </Field>
-              <Field label="KM Start"><Input required placeholder="10+050" value={form.km_start} onChange={(e) => setForm({ ...form, km_start: e.target.value })} /></Field>
-              <Field label="KM Finish"><Input required placeholder="10+150" value={form.km_finish} onChange={(e) => setForm({ ...form, km_finish: e.target.value })} /></Field>
-            </div>
-            <div className="grid grid-cols-2 gap-3">
-              <Field label="Area (nama lokasi)"><Input value={form.area_nama} onChange={(e) => setForm({ ...form, area_nama: e.target.value })} /></Field>
-              <Field label="Line">
-                <Select value={form.line} onChange={(e) => setForm({ ...form, line: e.target.value as LineType })}>
-                  {LINES.map((l) => <option key={l} value={l}>{l}</option>)}
+              <Field label="Jenis Pekerjaan">
+                <Select value={form.remark_pekerjaan} disabled={!!editingId} onChange={(e) => setForm({ ...form, remark_pekerjaan: e.target.value as WorkItem })}>
+                  {WORK_ITEMS.map((w) => <option key={w} value={w}>{w}</option>)}
                 </Select>
               </Field>
             </div>
 
-            <div className="space-y-2 rounded-md border border-gray-200 p-3">
-              <p className="text-xs font-semibold text-gray-500">Volume per Jenis (Panjang / Lebar, meter)</p>
-              {[
-                ["CAPEX (Upgrading)", "capex_p", "capex_l"],
-                ["OPEX (Maintenance)", "opex_p", "opex_l"],
-                ["Reseal 2 Coat (Maintenance)", "reseal2_p", "reseal2_l"],
-                ["Repair", "repair_p", "repair_l"],
-                ["Opname", "opname_p", "opname_l"],
-              ].map(([label, pKey, lKey]) => (
-                <div key={pKey} className="grid grid-cols-3 items-center gap-2 text-sm">
-                  <span className="text-gray-600">{label}</span>
-                  <Input type="number" step="0.1" placeholder="Panjang" value={(form as any)[pKey]} onChange={(e) => setForm({ ...form, [pKey]: e.target.value })} />
-                  <Input type="number" step="0.1" placeholder="Lebar" value={(form as any)[lKey]} onChange={(e) => setForm({ ...form, [lKey]: e.target.value })} />
-                </div>
-              ))}
+            {(form.remark_pekerjaan === "Recycling" || form.remark_pekerjaan === "Upgrading") && !editingId && (
+              <p className="rounded-md bg-amber-500/10 px-3 py-2 text-xs text-amber-700">
+                Otomatis membuat 2 baris: Heavy Patches + Double Coat (KM Finish Double Coat +2 m).
+              </p>
+            )}
+
+            {isTambalanForm ? (
+              <div className="grid grid-cols-2 gap-3">
+                <Field label="KM (titik tunggal)"><Input required placeholder="10+050" value={form.km_start} onChange={(e) => setForm({ ...form, km_start: e.target.value })} /></Field>
+                <Field label="Line">
+                  <Select value={form.line} onChange={(e) => setForm({ ...form, line: e.target.value as LineType })}>
+                    {LINES.map((l) => <option key={l} value={l}>{l}</option>)}
+                  </Select>
+                </Field>
+                <Field label="Panjang (m)"><Input required type="number" step="0.1" value={form.panjang_tambalan} onChange={(e) => setForm({ ...form, panjang_tambalan: e.target.value })} /></Field>
+                <Field label="Lebar (m)"><Input required type="number" step="0.1" value={form.lebar} onChange={(e) => setForm({ ...form, lebar: e.target.value })} /></Field>
+                <Field label="Volume (kg)"><Input type="number" step="0.1" value={form.volume_kg} onChange={(e) => setForm({ ...form, volume_kg: e.target.value })} /></Field>
+              </div>
+            ) : (
+              <div className="grid grid-cols-2 gap-3">
+                <Field label="KM Start"><Input required placeholder="10+050" value={form.km_start} onChange={(e) => setForm({ ...form, km_start: e.target.value })} /></Field>
+                <Field label="KM Finish"><Input required placeholder="10+150" value={form.km_finish} onChange={(e) => setForm({ ...form, km_finish: e.target.value })} /></Field>
+                <Field label="Line">
+                  <Select value={form.line} onChange={(e) => setForm({ ...form, line: e.target.value as LineType })}>
+                    {LINES.map((l) => <option key={l} value={l}>{l}</option>)}
+                  </Select>
+                </Field>
+                <Field label="Lebar (m)"><Input required type="number" step="0.1" value={form.lebar} onChange={(e) => setForm({ ...form, lebar: e.target.value })} /></Field>
+              </div>
+            )}
+
+            <div className="rounded-md bg-asphalt-50 p-3 text-sm">
+              Panjang (auto): <span className="chainage font-medium">{panjangPreview ? `${formatNumberID(panjangPreview, 1)} m` : "-"}</span>
             </div>
 
-            <Field label="Keterangan">
-              <Input value={form.keterangan} onChange={(e) => setForm({ ...form, keterangan: e.target.value })} />
-            </Field>
-            <Field label="Remark Pekerjaan">
-              <Select value={form.remark_pekerjaan} onChange={(e) => setForm({ ...form, remark_pekerjaan: e.target.value as WorkItem })}>
-                {WORK_ITEMS.map((w) => <option key={w} value={w}>{w}</option>)}
-              </Select>
-            </Field>
+            <div className="grid grid-cols-2 gap-3">
+              <Field label="Area">
+                <Select value={form.area_nama} onChange={(e) => setForm({ ...form, area_nama: e.target.value })}>
+                  {AREA_OPTIONS.map((a) => <option key={a} value={a}>{a}</option>)}
+                </Select>
+              </Field>
+              <Field label="Keterangan">
+                <Select value={form.keterangan} onChange={(e) => setForm({ ...form, keterangan: e.target.value })}>
+                  {KETERANGAN_OPTIONS.map((k) => <option key={k} value={k}>{k}</option>)}
+                </Select>
+              </Field>
+            </div>
+
             {formError && <p className="text-sm text-signal-red">{formError}</p>}
             <div className="flex justify-end gap-2 pt-2">
               <Button type="button" variant="secondary" onClick={() => setModalOpen(false)}>Batal</Button>

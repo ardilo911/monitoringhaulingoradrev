@@ -6,6 +6,14 @@ Stack: **Next.js 14 (App Router) + TypeScript + Tailwind CSS + Supabase (Auth + 
 
 ---
 
+## 0. PENTING: Migrasi setelah update ini
+
+Kalau project Supabase Anda sudah pernah dijalankan `schema.sql` versi sebelumnya, **jalankan ulang seluruh `schema.sql` sekali lagi** di SQL Editor sebelum deploy kode baru ini. File ini sudah idempotent (aman dijalankan ulang) dan sekarang menambahkan:
+- Kolom baru di `work_records`: `lebar`, `panjang_override`, `volume_kg`.
+- Nilai baru `'Tambalan'` di tipe `work_item_type`.
+
+Tanpa migrasi ini, form Rekap Pekerjaan/Database yang baru akan gagal menyimpan data (kolom/nilai belum ada di database).
+
 ## 1. Setup Supabase
 
 1. Buat project baru di [supabase.com](https://supabase.com).
@@ -87,21 +95,29 @@ netlify deploy --prod
 
 ---
 
-## 6. Logika Koreksi Retensi (inti aplikasi)
+## 6. Logika Bisnis: Jenis Pekerjaan, Koreksi Retensi, dan BAST
 
-Diimplementasikan di `src/lib/retention.ts`. Ringkasan aturan:
+**Auto-generate baris dari 1 input pekerjaan** (`src/lib/workGeneration.ts`):
+- **Recycling** → otomatis membuat 2 baris: `heavy_patches_recycling` (Luas = Panjang×Lebar sesuai KM) dan `double_coat` (KM Finish otomatis +2 m, jadi Luas-nya lebih besar — merepresentasikan overlap Double Coat).
+- **Upgrading** → sama seperti Recycling, tapi kategori heavy patches-nya `heavy_patches_upgrading`.
+- **Reseal 2 Coat** dan **Reseal Selected** → 1 baris kategori `double_coat`, tanpa overlap tambahan.
+- **Reseal 1 Coat** → 1 baris kategori `reseal_1_coat`.
+- **Tambalan** → 1 baris kategori `tambalan`, KM berupa titik tunggal (bukan rentang), dengan field Panjang, Lebar, dan Volume (kg) tersendiri.
+- **Temuan Opname** → field opsional (Panjang/Lebar) yang menempel di baris pertama sebagai catatan tambahan, tidak membuat baris/kategori baru.
 
-- Koreksi hanya berlaku pada **Line yang sama**.
-- Berlaku **lintas jenis pekerjaan** (dikonfirmasi): pekerjaan baru tipe apapun bisa dikoreksi oleh record lama tipe apapun, selama beririsan chainage & line, dan record lama masih dalam jendela retensi (`tanggal_baru − retention_months ≤ tanggal_lama < tanggal_baru`).
-- Jika beririsan dengan beberapa record retensi sekaligus, semua interval retensi di-**union** dulu sebelum dihitung overlap — mencegah double counting.
-- `Luas dapat dibayar = Luas baru − (panjang overlap × lebar pekerjaan baru)`, minimum 0.
-- Pemetaan kategori Rekap Pekerjaan → Work Item BAST (dikonfirmasi):
-  `double_coat → Reseal 1 Coat`, `heavy_patches_recycling → Recycling`, `heavy_patches_upgrading → Upgrading`, `reseal_1_coat → Reseal 1 Coat`, `tambalan → Reseal Selected`. Ubah di `src/lib/types.ts` (`KATEGORI_TO_WORK_ITEM`) bila perlu.
+Konstanta overlap Double Coat (`DOUBLE_COAT_OVERLAP_M = 2`) bisa diubah di `src/lib/workGeneration.ts` kalau nilainya berbeda di lapangan.
 
-Test case wajib dari PRD (didokumentasikan sebagai komentar di `retention.ts`):
-- Rekap: 01 Sep 2026, KM 10+050–10+150, LL, P=100 L=6 → 600 m² Recycling.
-- Database: 01 Jun 2026, KM 10+100–10+150, LL, P=50 L=6 (masih retensi 6 bulan).
-- Hasil BAST: dapat dibayar 300 m² (KM 10+050–10+100).
+**Koreksi Retensi** (`src/lib/retention.ts`) tidak berubah aturannya (lihat bagian 6 versi sebelumnya di bawah), hanya sekarang setiap baris `work_records` punya `lebar` asli sendiri (tidak perlu lagi didekati dari total luas ÷ panjang). Kategori `tambalan` dikecualikan dari koreksi retensi (titik tunggal, bukan rentang jalan).
+
+**Summary BAST** (5 baris, sesuai permintaan terakhir):
+- **Double Coat** = baris `double_coat` yang berasal dari Recycling atau Upgrading.
+- **Reseal 1 Coat** = baris `reseal_1_coat`.
+- **Reseal 2 Coat** = baris `double_coat` yang berasal dari Work Item "Reseal 2 Coat".
+- **Reseal Selected** = baris `double_coat` yang berasal dari Work Item "Reseal Selected".
+- **Upgrading** = baris `heavy_patches_upgrading` (porsi CAPEX-nya).
+- `heavy_patches_recycling` dan `tambalan` **tidak** ikut dibayar lewat BAST (hanya tercatat di Database/Rekap Pekerjaan) — beri tahu saya kalau ternyata ini juga perlu dibayarkan lewat mekanisme lain, supaya saya tambahkan.
+
+Test case wajib dari PRD asli (retensi 600→300 m²) dan 4 skenario baru (Recycling/Upgrading 2-baris, Reseal 2 Coat 1-baris, Tambalan titik tunggal) sudah diverifikasi lulus.
 
 ---
 
@@ -132,4 +148,5 @@ supabase/schema.sql           # Skema database + RLS
 
 - Manajemen user baru (membuat akun) dilakukan lewat Supabase Dashboard, bukan dari dalam aplikasi — membuat user Auth baru butuh **service role key** yang tidak aman dipanggil dari browser. Admin hanya mengatur *role* & *akses mitra* dari dalam aplikasi.
 - Login memakai email Supabase Auth, bukan username custom.
+- Heavy Patches Recycling dan Tambalan tidak dibayar lewat BAST (lihat bagian 6) — kalau ternyata perlu, beri tahu saya skema pembayarannya.
 - Export PDF menggunakan layout tabel sederhana (bukan template BAST resmi bermeterai) — bisa dikembangkan lebih lanjut sesuai kop surat perusahaan.
