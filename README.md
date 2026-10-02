@@ -8,11 +8,15 @@ Stack: **Next.js 14 (App Router) + TypeScript + Tailwind CSS + Supabase (Auth + 
 
 ## 0. PENTING: Migrasi setelah update ini
 
-Kalau project Supabase Anda sudah pernah dijalankan `schema.sql` versi sebelumnya, **jalankan ulang seluruh `schema.sql` sekali lagi** di SQL Editor sebelum deploy kode baru ini. File ini sudah idempotent (aman dijalankan ulang) dan sekarang menambahkan:
-- Kolom baru di `work_records`: `lebar`, `panjang_override`, `volume_kg`.
+Kalau project Supabase Anda sudah pernah dijalankan `schema.sql` versi sebelumnya, **jalankan ulang seluruh `schema.sql` sekali lagi** di SQL Editor sebelum deploy kode baru ini. File ini idempotent (aman dijalankan ulang) dan sekarang menambahkan:
+- Kolom baru di `work_records`: `lebar`, `panjang_override`, `volume_kg`, `in_database`, `opname_catatan`.
 - Nilai baru `'Tambalan'` di tipe `work_item_type`.
 
-Tanpa migrasi ini, form Rekap Pekerjaan/Database yang baru akan gagal menyimpan data (kolom/nilai belum ada di database).
+Tanpa migrasi ini, form Rekap Pekerjaan/Database yang baru akan gagal menyimpan data.
+
+**Perubahan penting cara pakai:**
+- **Periode sekarang tanggal 26 s.d 25** (bukan tanggal 1 s.d akhir bulan kalender). Semua filter "Periode" di WRO/Rekap Pekerjaan/Database/BAST sekarang berupa pemilih tanggal — pilih tanggal apa saja, aplikasi otomatis menampilkan rentang periode (26–25) yang memuat tanggal itu.
+- **Rekap Pekerjaan dan Database sekarang benar-benar terpisah.** Data yang diinput di Rekap Pekerjaan hanya muncul di Rekap Pekerjaan. Untuk masuk ke Database (basis koreksi retensi), Admin harus menambahkannya secara manual lewat halaman Database.
 
 ## 1. Setup Supabase
 
@@ -98,26 +102,32 @@ netlify deploy --prod
 ## 6. Logika Bisnis: Jenis Pekerjaan, Koreksi Retensi, dan BAST
 
 **Auto-generate baris dari 1 input pekerjaan** (`src/lib/workGeneration.ts`):
-- **Recycling** → otomatis membuat 2 baris: `heavy_patches_recycling` (Luas = Panjang×Lebar sesuai KM) dan `double_coat` (KM Finish otomatis +2 m, jadi Luas-nya lebih besar — merepresentasikan overlap Double Coat).
+- **Recycling** → otomatis membuat 2 baris: `heavy_patches_recycling` (Luas = Panjang×Lebar sesuai KM asli) dan `double_coat` (KM Start mundur 1m, KM Finish maju 1m — overlap Double Coat).
 - **Upgrading** → sama seperti Recycling, tapi kategori heavy patches-nya `heavy_patches_upgrading`.
 - **Reseal 2 Coat** dan **Reseal Selected** → 1 baris kategori `double_coat`, tanpa overlap tambahan.
 - **Reseal 1 Coat** → 1 baris kategori `reseal_1_coat`.
-- **Tambalan** → 1 baris kategori `tambalan`, KM berupa titik tunggal (bukan rentang), dengan field Panjang, Lebar, dan Volume (kg) tersendiri.
-- **Temuan Opname** → field opsional (Panjang/Lebar) yang menempel di baris pertama sebagai catatan tambahan, tidak membuat baris/kategori baru.
+- **Tambalan** → 1 baris kategori `tambalan`, KM titik tunggal, dengan Panjang, Lebar, dan Volume (kg) sendiri.
+- **Temuan Opname** → catatan teks manual (bukan angka), menempel di baris pertama sebagai informasi tambahan.
 
-Konstanta overlap Double Coat (`DOUBLE_COAT_OVERLAP_M = 2`) bisa diubah di `src/lib/workGeneration.ts` kalau nilainya berbeda di lapangan.
+**Rekap Pekerjaan vs Database (terpisah, bukan otomatis):**
+- Baris dari Rekap Pekerjaan disimpan dengan `in_database = false` — hanya tampil di Rekap Pekerjaan.
+- Baris dari Database (input admin) disimpan dengan `in_database = true` — basis koreksi retensi di BAST.
+- BAST membandingkan: pekerjaan baru = `in_database=false` pada periode terpilih, vs basis retensi = `in_database=true` beberapa periode ke belakang.
 
-**Koreksi Retensi** (`src/lib/retention.ts`) tidak berubah aturannya (lihat bagian 6 versi sebelumnya di bawah), hanya sekarang setiap baris `work_records` punya `lebar` asli sendiri (tidak perlu lagi didekati dari total luas ÷ panjang). Kategori `tambalan` dikecualikan dari koreksi retensi (titik tunggal, bukan rentang jalan).
+**Koreksi Retensi** (`src/lib/retention.ts`) — sebuah pekerjaan baru dianggap "mengenai area garansi" kalau, dibandingkan satu baris Database, **semua syarat berikut sama**: Keterangan, Area, dan Line, DAN rentang KM-nya beririsan, DAN pekerjaan Database itu masih dalam masa retensi (default 6 bulan) dihitung dari tanggal pekerjaan baru. Kalau semua syarat terpenuhi, `Luas Dikoreksi = panjang overlap × lebar`, dan `Luas Dapat Dibayar = Luas Sebelum − Luas Dikoreksi`. Beririsan dengan beberapa baris Database sekaligus di-union dulu supaya tidak double counting.
 
-**Summary BAST** (5 baris, sesuai permintaan terakhir):
+**Periode fiskal 26-25** (`src/lib/period.ts`): 1 "bulan" = tanggal 26 s.d tanggal 25 bulan berikutnya. Semua halaman pakai date-picker; pilih tanggal apa saja dan aplikasi otomatis menghitung rentang periodenya.
+
+**Summary BAST** (6 baris):
 - **Double Coat** = baris `double_coat` yang berasal dari Recycling atau Upgrading.
 - **Reseal 1 Coat** = baris `reseal_1_coat`.
-- **Reseal 2 Coat** = baris `double_coat` yang berasal dari Work Item "Reseal 2 Coat".
-- **Reseal Selected** = baris `double_coat` yang berasal dari Work Item "Reseal Selected".
-- **Upgrading** = baris `heavy_patches_upgrading` (porsi CAPEX-nya).
-- `heavy_patches_recycling` dan `tambalan` **tidak** ikut dibayar lewat BAST (hanya tercatat di Database/Rekap Pekerjaan) — beri tahu saya kalau ternyata ini juga perlu dibayarkan lewat mekanisme lain, supaya saya tambahkan.
+- **Reseal 2 Coat** = baris `double_coat` dari Work Item "Reseal 2 Coat".
+- **Reseal Selected** = baris `double_coat` dari Work Item "Reseal Selected".
+- **Heavy Patches Upgrading** = baris `heavy_patches_upgrading` (porsi CAPEX).
+- **Heavy Patches Recycling** = baris `heavy_patches_recycling`.
+- `tambalan` tidak dibayar lewat BAST ini (titik tunggal, bukan volume rentang jalan) — beri tahu saya kalau ternyata perlu ditambahkan.
 
-Test case wajib dari PRD asli (retensi 600→300 m²) dan 4 skenario baru (Recycling/Upgrading 2-baris, Reseal 2 Coat 1-baris, Tambalan titik tunggal) sudah diverifikasi lulus.
+Semua aturan di atas sudah diverifikasi dengan test otomatis, termasuk mereproduksi persis contoh perhitungan manual Anda (overlap 152m → terkoreksi 912 m² → dapat dibayar 600 m²).
 
 ---
 
@@ -139,8 +149,10 @@ src/
   components/                # Sidebar, Topbar, ExportButtons, UI primitives
   lib/
     retention.ts              # Engine koreksi retensi (inti bisnis)
-    chainage.ts                # Parsing format KM XX+XXX
-    types.ts                    # Tipe data & mapping kategori→work item
+    workGeneration.ts          # Auto-generate baris Heavy Patches + Double Coat
+    period.ts                   # Periode fiskal 26-25
+    chainage.ts                  # Parsing format KM XX+XXX
+    types.ts                      # Tipe data, WORK_ITEMS, AREA_OPTIONS, dll
 supabase/schema.sql           # Skema database + RLS
 ```
 
@@ -148,5 +160,5 @@ supabase/schema.sql           # Skema database + RLS
 
 - Manajemen user baru (membuat akun) dilakukan lewat Supabase Dashboard, bukan dari dalam aplikasi — membuat user Auth baru butuh **service role key** yang tidak aman dipanggil dari browser. Admin hanya mengatur *role* & *akses mitra* dari dalam aplikasi.
 - Login memakai email Supabase Auth, bukan username custom.
-- Heavy Patches Recycling dan Tambalan tidak dibayar lewat BAST (lihat bagian 6) — kalau ternyata perlu, beri tahu saya skema pembayarannya.
+- Tambalan tidak dibayar lewat BAST (titik tunggal, bukan volume rentang jalan) — beri tahu saya kalau ternyata perlu ditambahkan skema pembayarannya.
 - Export PDF menggunakan layout tabel sederhana (bukan template BAST resmi bermeterai) — bisa dikembangkan lebih lanjut sesuai kop surat perusahaan.

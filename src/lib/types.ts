@@ -87,12 +87,14 @@ export interface WorkRecord {
   lebar: number; // meter - lebar pekerjaan pada baris ini
   panjang_override: number | null; // hanya dipakai untuk kategori 'tambalan' (bukan rentang KM)
   volume_kg: number; // hanya relevan untuk kategori 'tambalan'
+  in_database: boolean; // true = diinput lewat halaman Database (basis retensi); false = dari Rekap Pekerjaan
+  opname_catatan: string | null; // Temuan Opname - catatan manual dari lapangan
   // Kolom lama (P/L per jenis) - dipertahankan untuk kompatibilitas data lama, tidak dipakai form baru.
   capex_p: number; capex_l: number;
   opex_p: number; opex_l: number;
   reseal2_p: number; reseal2_l: number;
   repair_p: number; repair_l: number;
-  opname_p: number; opname_l: number; // "Temuan Opname"
+  opname_p: number; opname_l: number;
   keterangan: string | null; // salah satu KETERANGAN_OPTIONS
   remark_pekerjaan: WorkItem;
   created_at?: string;

@@ -15,11 +15,11 @@ export function chainageToMeters(value: string): number {
   return km * 1000 + meter;
 }
 
-/** Konversi 10050 (meter) -> "10+050" */
+/** Konversi 10050 (meter) -> "10+050" (km dipadatkan minimal 2 digit, meter selalu 3 digit) */
 export function metersToChainage(meters: number): string {
   const km = Math.floor(meters / 1000);
   const rest = Math.round(meters - km * 1000);
-  return `${km}+${String(rest).padStart(3, "0")}`;
+  return `${String(km).padStart(2, "0")}+${String(rest).padStart(3, "0")}`;
 }
 
 /** Panjang segmen dalam meter dari dua chainage */

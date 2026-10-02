@@ -6,17 +6,13 @@ import { supabase } from "@/lib/supabaseClient";
 import { useSession } from "@/lib/useSession";
 import { chainageToMeters, isValidChainage, segmentLength } from "@/lib/chainage";
 import { formatNumberID } from "@/lib/format";
+import { periodeRangeFromDate, formatPeriodeLabel } from "@/lib/period";
 import { WRO_WORK_ITEMS, LINES, type Wro, type Mitra, type WorkItem, type LineType, type WroStatus } from "@/lib/types";
 import { Button } from "@/components/ui/Button";
 import { Input, Select, Field } from "@/components/ui/Input";
 import { Modal } from "@/components/ui/Modal";
 import { Badge } from "@/components/ui/Badge";
 import { ExportButtons } from "@/components/ExportButtons";
-
-function currentPeriode() {
-  const d = new Date();
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
-}
 
 function todayStr() {
   return new Date().toISOString().slice(0, 10);
@@ -40,7 +36,8 @@ export default function WroPage() {
   const { profile } = useSession();
   const isAdmin = profile?.role === "admin";
 
-  const [periode, setPeriode] = useState(currentPeriode());
+  const [anchorDate, setAnchorDate] = useState(todayStr());
+  const periodeRange = useMemo(() => periodeRangeFromDate(anchorDate), [anchorDate]);
   const [rows, setRows] = useState<Wro[]>([]);
   const [loading, setLoading] = useState(true);
   const [modalOpen, setModalOpen] = useState(false);
@@ -54,8 +51,9 @@ export default function WroPage() {
       .from("wro")
       .select("*")
       .eq("mitra", mitra)
-      .eq("periode", periode)
-      .order("created_at", { ascending: false });
+      .gte("tgl_submit", periodeRange.start)
+      .lte("tgl_submit", periodeRange.end)
+      .order("tgl_submit", { ascending: false });
     setRows((data as Wro[]) ?? []);
     setLoading(false);
   }
@@ -63,7 +61,7 @@ export default function WroPage() {
   useEffect(() => {
     load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [mitra, periode]);
+  }, [mitra, periodeRange.start, periodeRange.end]);
 
   const panjangPreview = useMemo(() => {
     if (isValidChainage(form.km_start) && isValidChainage(form.km_finish)) {
@@ -81,7 +79,7 @@ export default function WroPage() {
 
   function openAdd() {
     setEditingId(null);
-    setForm(emptyForm);
+    setForm({ ...emptyForm, tgl_submit: anchorDate });
     setFormError(null);
     setModalOpen(true);
   }
@@ -107,7 +105,6 @@ export default function WroPage() {
     setForm((f) => ({
       ...f,
       status,
-      // Tanggal approve terisi otomatis pada hari status diubah ke Approve; dikosongkan lagi kalau dibatalkan.
       tgl_approve: status === "Approve" ? (f.tgl_approve || todayStr()) : "",
     }));
   }
@@ -119,6 +116,10 @@ export default function WroPage() {
   async function handleSave(e: React.FormEvent) {
     e.preventDefault();
     setFormError(null);
+    if (!form.tgl_submit) {
+      setFormError("Tanggal Submit wajib diisi.");
+      return;
+    }
     if (!isValidChainage(form.km_start) || !isValidChainage(form.km_finish)) {
       setFormError("Format KM harus XX+XXX, contoh 10+050.");
       return;
@@ -133,12 +134,13 @@ export default function WroPage() {
       return;
     }
     const panjang = segmentLength(form.km_start, form.km_finish);
+    const periodeAtSubmit = periodeRangeFromDate(form.tgl_submit);
 
     const payload: Record<string, unknown> = {
       mitra,
-      periode,
+      periode: periodeAtSubmit.start, // disimpan hanya sebagai catatan, filter sesungguhnya pakai tgl_submit
       nomer_wro: form.nomer_wro,
-      tgl_submit: form.tgl_submit || null,
+      tgl_submit: form.tgl_submit,
       km_start: form.km_start,
       km_finish: form.km_finish,
       line: form.line,
@@ -146,7 +148,6 @@ export default function WroPage() {
       lebar,
       work_item: form.work_item,
     };
-    // Status & tanggal approve hanya admin yang boleh ubah - mitra selalu submit sebagai Process.
     if (isAdmin) {
       payload.status = form.status;
       payload.tgl_approve = form.status === "Approve" ? (form.tgl_approve || todayStr()) : null;
@@ -191,17 +192,17 @@ export default function WroPage() {
         <div>
           <h1 className="text-lg font-semibold text-graphite-900">Work Request Order</h1>
           <p className="text-sm text-gray-500">
-            Pengajuan pekerjaan perawatan hauling road.
+            Pengajuan pekerjaan perawatan hauling road. Periode: <strong>{formatPeriodeLabel(periodeRange)}</strong>.
             {!isAdmin && " Status & tanggal approve ditentukan oleh Admin."}
           </p>
         </div>
         <div className="flex items-end gap-3">
-          <Field label="Periode">
-            <Input type="month" value={periode} onChange={(e) => setPeriode(e.target.value)} />
+          <Field label="Pilih Tanggal (periode)">
+            <Input type="date" value={anchorDate} onChange={(e) => setAnchorDate(e.target.value)} />
           </Field>
           <ExportButtons
-            filename={`wro-${mitra}-${periode}`}
-            title={`WRO ${mitra.toUpperCase()} - ${periode}`}
+            filename={`wro-${mitra}-${periodeRange.start}`}
+            title={`WRO ${mitra.toUpperCase()} - ${formatPeriodeLabel(periodeRange)}`}
             columns={["No WRO", "Submit", "Approve", "Status", "KM Start", "KM Finish", "Line", "Panjang (m)", "Lebar (m)", "Luasan (m2)", "Work Item"]}
             rows={exportRows}
           />
@@ -274,7 +275,7 @@ export default function WroPage() {
             </Field>
             <div className="grid grid-cols-2 gap-3">
               <Field label="Date of Submission">
-                <Input type="date" value={form.tgl_submit} onChange={(e) => setForm({ ...form, tgl_submit: e.target.value })} />
+                <Input required type="date" value={form.tgl_submit} onChange={(e) => setForm({ ...form, tgl_submit: e.target.value })} />
               </Field>
               {isAdmin && (
                 <Field label="Date of Approval (otomatis)">

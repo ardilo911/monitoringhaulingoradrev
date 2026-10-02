@@ -55,7 +55,7 @@ export interface CorrectionResult {
  * setelah dikoreksi terhadap area yang masih dalam masa retensi (dari Database / C).
  *
  * Aturan (sesuai PRD & konfirmasi user):
- * - Koreksi hanya berlaku pada Line yang sama.
+ * - Kandidat retensi harus SAMA di: Keterangan, Area, dan Line (baru lanjut cek KM/tanggal).
  * - Berlaku LINTAS jenis pekerjaan (work item baru apapun bisa dikoreksi oleh record lama apapun).
  * - Record lama dianggap "masih retensi" jika newDate - retentionMonths <= record.work_date < newDate.
  * - Jika beririsan dengan beberapa record, union dulu interval-nya sebelum dihitung overlap
@@ -67,10 +67,12 @@ export function calculateRetentionCorrection(params: {
   newLine: LineType;
   newDate: string; // YYYY-MM-DD
   newLebar: number;
+  newKeterangan?: string | null;
+  newAreaNama?: string | null;
   databaseRecords: WorkRecord[]; // kandidat dari halaman Database (C), sudah difilter mitra
   retentionMonths: number;
 }): CorrectionResult {
-  const { newKmStart, newKmFinish, newLine, newDate, newLebar, databaseRecords, retentionMonths } = params;
+  const { newKmStart, newKmFinish, newLine, newDate, newLebar, newKeterangan, newAreaNama, databaseRecords, retentionMonths } = params;
 
   const target: Interval = {
     start: chainageToMeters(newKmStart),
@@ -82,9 +84,11 @@ export function calculateRetentionCorrection(params: {
   const cutoffMs = addMonths(newDate, -retentionMonths).getTime();
   const newDateMs = new Date(newDate + "T00:00:00").getTime();
 
-  // 1. Filter kandidat: line sama + tanggal masih dalam jendela retensi + lebih lama dari pekerjaan baru
+  // 1. Filter kandidat: Keterangan sama + Area sama + Line sama + tanggal masih dalam jendela retensi
   const candidates = databaseRecords.filter((r) => {
     if (r.line !== newLine) return false;
+    if ((newKeterangan ?? null) !== (r.keterangan ?? null)) return false;
+    if ((newAreaNama ?? null) !== (r.area_nama ?? null)) return false;
     const rDateMs = new Date(r.work_date + "T00:00:00").getTime();
     return rDateMs >= cutoffMs && rDateMs < newDateMs;
   });

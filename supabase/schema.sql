@@ -131,6 +131,8 @@ create table if not exists work_records (
   lebar numeric not null default 0,
   panjang_override numeric, -- hanya dipakai untuk kategori 'tambalan'
   volume_kg numeric not null default 0, -- hanya relevan untuk kategori 'tambalan'
+  in_database boolean not null default false, -- true = basis retensi (halaman Database), false = Rekap Pekerjaan
+  opname_catatan text, -- Temuan Opname (catatan manual)
   capex_p numeric default 0, capex_l numeric default 0,
   opex_p numeric default 0, opex_l numeric default 0,
   reseal2_p numeric default 0, reseal2_l numeric default 0,
@@ -147,6 +149,8 @@ create table if not exists work_records (
 alter table work_records add column if not exists lebar numeric not null default 0;
 alter table work_records add column if not exists panjang_override numeric;
 alter table work_records add column if not exists volume_kg numeric not null default 0;
+alter table work_records add column if not exists in_database boolean not null default false;
+alter table work_records add column if not exists opname_catatan text;
 
 -- ---------- BAST ----------
 create table if not exists bast (
@@ -232,11 +236,14 @@ create policy "wro_delete" on wro for delete using (public.has_mitra_access(mitr
 drop policy if exists "wr_select" on work_records;
 create policy "wr_select" on work_records for select using (public.has_mitra_access(mitra));
 drop policy if exists "wr_insert" on work_records;
-create policy "wr_insert" on work_records for insert with check (public.has_mitra_access(mitra));
+create policy "wr_insert" on work_records for insert
+  with check (public.has_mitra_access(mitra) and (in_database = false or public.is_admin()));
 drop policy if exists "wr_update" on work_records;
-create policy "wr_update" on work_records for update using (public.has_mitra_access(mitra));
+create policy "wr_update" on work_records for update
+  using (public.has_mitra_access(mitra) and (in_database = false or public.is_admin()));
 drop policy if exists "wr_delete" on work_records;
-create policy "wr_delete" on work_records for delete using (public.has_mitra_access(mitra));
+create policy "wr_delete" on work_records for delete
+  using (public.has_mitra_access(mitra) and (in_database = false or public.is_admin()));
 
 -- BAST
 drop policy if exists "bast_select" on bast;

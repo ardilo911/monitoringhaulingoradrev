@@ -4,9 +4,10 @@ import { useEffect, useMemo, useState } from "react";
 import { useParams } from "next/navigation";
 import { supabase } from "@/lib/supabaseClient";
 import { useSession } from "@/lib/useSession";
-import { formatNumberID, formatDateID, lastNPeriods, monthLabelID } from "@/lib/format";
+import { formatNumberID, formatDateID } from "@/lib/format";
 import { isValidChainage, chainageToMeters, segmentLength } from "@/lib/chainage";
-import { generateWorkRows, rowPanjang, rowArea } from "@/lib/workGeneration";
+import { generateDatabaseRow, rowPanjang, rowArea } from "@/lib/workGeneration";
+import { periodeRangeFromDate, formatPeriodeLabel, lastNPeriodeRanges } from "@/lib/period";
 import {
   WORK_ITEMS,
   LINES,
@@ -24,9 +25,8 @@ import { Input, Select, Field } from "@/components/ui/Input";
 import { Modal } from "@/components/ui/Modal";
 import { ExportButtons } from "@/components/ExportButtons";
 
-function currentPeriode() {
-  const d = new Date();
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+function todayStr() {
+  return new Date().toISOString().slice(0, 10);
 }
 
 const KATEGORI_TABS: (RekapKategori | "periode")[] = [
@@ -57,7 +57,12 @@ export default function DatabasePage() {
   const { profile } = useSession();
   const isAdmin = profile?.role === "admin";
 
-  const [periode, setPeriode] = useState(currentPeriode());
+  const [anchorDate, setAnchorDate] = useState(todayStr());
+  const periods = useMemo(() => lastNPeriodeRanges(anchorDate, 6), [anchorDate]);
+  const rangeStart = periods[0].start;
+  const rangeEnd = periods[periods.length - 1].end;
+  const currentPeriodeRange = useMemo(() => periodeRangeFromDate(anchorDate), [anchorDate]);
+
   const [tab, setTab] = useState<(typeof KATEGORI_TABS)[number]>("periode");
   const [rows, setRows] = useState<WorkRecord[]>([]);
   const [loading, setLoading] = useState(true);
@@ -65,11 +70,6 @@ export default function DatabasePage() {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [form, setForm] = useState(emptyForm);
   const [formError, setFormError] = useState<string | null>(null);
-
-  const periods = useMemo(() => lastNPeriods(periode, 6), [periode]);
-  const rangeStart = `${periods[0]}-01`;
-  const rangeEndDate = new Date(Number(periode.split("-")[0]), Number(periode.split("-")[1]), 0);
-  const rangeEnd = rangeEndDate.toISOString().slice(0, 10);
   const isTambalanForm = form.remark_pekerjaan === "Tambalan";
 
   async function load() {
@@ -78,6 +78,7 @@ export default function DatabasePage() {
       .from("work_records")
       .select("*")
       .eq("mitra", mitra)
+      .eq("in_database", true)
       .gte("work_date", rangeStart)
       .lte("work_date", rangeEnd)
       .order("work_date", { ascending: false });
@@ -88,7 +89,7 @@ export default function DatabasePage() {
   useEffect(() => {
     load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [mitra, periode]);
+  }, [mitra, rangeStart, rangeEnd]);
 
   const rowsForTab = useMemo(() => (tab === "periode" ? rows : rows.filter((r) => r.kategori === tab)), [rows, tab]);
 
@@ -111,7 +112,7 @@ export default function DatabasePage() {
 
   function openAdd() {
     setEditingId(null);
-    setForm(emptyForm);
+    setForm({ ...emptyForm, work_date: anchorDate });
     setFormError(null);
     setModalOpen(true);
   }
@@ -165,7 +166,7 @@ export default function DatabasePage() {
       };
       await supabase.from("work_records").update(payload).eq("id", editingId);
     } else {
-      const generated = generateWorkRows({
+      const generated = generateDatabaseRow({
         mitra,
         work_date: form.work_date,
         km_start: form.km_start,
@@ -177,6 +178,7 @@ export default function DatabasePage() {
         remark_pekerjaan: form.remark_pekerjaan,
         panjang_override: isTambalanForm ? parseFloat(form.panjang_tambalan) : null,
         volume_kg: isTambalanForm ? parseFloat(form.volume_kg || "0") : 0,
+        in_database: true,
       });
       await supabase.from("work_records").insert(generated);
     }
@@ -203,18 +205,18 @@ export default function DatabasePage() {
         <div>
           <h1 className="text-lg font-semibold text-graphite-900">Database</h1>
           <p className="text-sm text-gray-500">
-            Riwayat pekerjaan 6 bulan terakhir ({monthLabelID(periods[0])} – {monthLabelID(periode)}). Basis koreksi retensi untuk BAST.
-            {isAdmin && " Admin dapat menambah/mengubah data langsung di sini."}
+            Basis koreksi retensi untuk BAST — data terpisah dari Rekap Pekerjaan, diinput manual oleh Admin.
+            6 periode terakhir s.d {formatPeriodeLabel(currentPeriodeRange)}.
           </p>
         </div>
         <div className="flex items-end gap-3">
-          <Field label="Periode Akhir">
-            <Input type="month" value={periode} onChange={(e) => setPeriode(e.target.value)} />
+          <Field label="Pilih Tanggal (periode akhir)">
+            <Input type="date" value={anchorDate} onChange={(e) => setAnchorDate(e.target.value)} />
           </Field>
           {tab !== "periode" && (
             <ExportButtons
-              filename={`database-${tab}-${mitra}-${periode}`}
-              title={`Database ${REKAP_KATEGORI_LABEL[tab as RekapKategori]} ${mitra.toUpperCase()} (6 bulan s.d ${periode})`}
+              filename={`database-${tab}-${mitra}-${rangeStart}`}
+              title={`Database ${REKAP_KATEGORI_LABEL[tab as RekapKategori]} ${mitra.toUpperCase()} (${rangeStart} s.d ${rangeEnd})`}
               columns={["Tgl", "KM", "Panjang (m)", "Lebar (m)", "Luas (m2)", "Line", "Area", "Keterangan", "Remark"]}
               rows={exportRows}
             />
@@ -239,7 +241,7 @@ export default function DatabasePage() {
 
       {tab === "periode" ? (
         <div className="rounded-lg border border-gray-200 bg-white p-4">
-          <h3 className="mb-3 text-sm font-semibold text-graphite-900">Ringkasan 6 Bulan Terakhir</h3>
+          <h3 className="mb-3 text-sm font-semibold text-graphite-900">Ringkasan 6 Periode Terakhir</h3>
           <div className="grid grid-cols-2 gap-3 md:grid-cols-5">
             {(Object.keys(REKAP_KATEGORI_LABEL) as RekapKategori[]).map((k) => (
               <div key={k} className="rounded-md bg-asphalt-50 p-3">
@@ -263,7 +265,7 @@ export default function DatabasePage() {
             <tbody>
               {loading && <tr><td colSpan={11} className="py-6 text-center text-gray-400">Memuat...</td></tr>}
               {!loading && rowsForTab.length === 0 && (
-                <tr><td colSpan={11} className="py-8 text-center text-gray-400">Tidak ada data pada rentang 6 bulan ini.</td></tr>
+                <tr><td colSpan={11} className="py-8 text-center text-gray-400">Tidak ada data pada rentang ini.</td></tr>
               )}
               {rowsForTab.map((r) => (
                 <tr key={r.id}>
@@ -304,9 +306,9 @@ export default function DatabasePage() {
               </Field>
             </div>
 
-            {(form.remark_pekerjaan === "Recycling" || form.remark_pekerjaan === "Upgrading") && !editingId && (
-              <p className="rounded-md bg-amber-500/10 px-3 py-2 text-xs text-amber-700">
-                Otomatis membuat 2 baris: Heavy Patches + Double Coat (KM Finish Double Coat +2 m).
+            {!editingId && (
+              <p className="rounded-md bg-asphalt-50 px-3 py-2 text-xs text-gray-500">
+                Data Database tersimpan sebagai satu baris tunggal (tidak dipecah Heavy Patches/Double Coat) — dicocokkan ke Rekap Pekerjaan lewat Keterangan, Area, Line, KM, dan tanggal.
               </p>
             )}
 

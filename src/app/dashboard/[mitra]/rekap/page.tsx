@@ -6,6 +6,7 @@ import { supabase } from "@/lib/supabaseClient";
 import { formatNumberID, formatDateID } from "@/lib/format";
 import { isValidChainage, chainageToMeters, segmentLength } from "@/lib/chainage";
 import { generateWorkRows, rowPanjang, rowArea } from "@/lib/workGeneration";
+import { periodeRangeFromDate, formatPeriodeLabel } from "@/lib/period";
 import {
   WORK_ITEMS,
   LINES,
@@ -23,9 +24,8 @@ import { Input, Select, Field } from "@/components/ui/Input";
 import { Modal } from "@/components/ui/Modal";
 import { ExportButtons } from "@/components/ExportButtons";
 
-function currentPeriode() {
-  const d = new Date();
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+function todayStr() {
+  return new Date().toISOString().slice(0, 10);
 }
 
 const KATEGORI_TABS: (RekapKategori | "periode")[] = [
@@ -48,15 +48,15 @@ const emptyForm = {
   volume_kg: "",
   area_nama: AREA_OPTIONS[0] as string,
   keterangan: KETERANGAN_OPTIONS[0] as string,
-  opname_p: "",
-  opname_l: "",
+  opname_catatan: "",
 };
 
 export default function RekapPage() {
   const params = useParams<{ mitra: string }>();
   const mitra = params.mitra as Mitra;
 
-  const [periode, setPeriode] = useState(currentPeriode());
+  const [anchorDate, setAnchorDate] = useState(todayStr());
+  const periodeRange = useMemo(() => periodeRangeFromDate(anchorDate), [anchorDate]);
   const [tab, setTab] = useState<(typeof KATEGORI_TABS)[number]>("periode");
   const [rows, setRows] = useState<WorkRecord[]>([]);
   const [loading, setLoading] = useState(true);
@@ -71,8 +71,9 @@ export default function RekapPage() {
       .from("work_records")
       .select("*")
       .eq("mitra", mitra)
-      .gte("work_date", `${periode}-01`)
-      .lte("work_date", `${periode}-31`)
+      .eq("in_database", false)
+      .gte("work_date", periodeRange.start)
+      .lte("work_date", periodeRange.end)
       .order("work_date", { ascending: false });
     setRows((data as WorkRecord[]) ?? []);
     setLoading(false);
@@ -81,7 +82,7 @@ export default function RekapPage() {
   useEffect(() => {
     load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [mitra, periode]);
+  }, [mitra, periodeRange.start, periodeRange.end]);
 
   const rowsForTab = useMemo(() => (tab === "periode" ? rows : rows.filter((r) => r.kategori === tab)), [rows, tab]);
   const isTambalanForm = form.remark_pekerjaan === "Tambalan";
@@ -111,7 +112,7 @@ export default function RekapPage() {
 
   function openAdd() {
     setEditingId(null);
-    setForm(emptyForm);
+    setForm({ ...emptyForm, work_date: anchorDate });
     setFormError(null);
     setModalOpen(true);
   }
@@ -129,8 +130,7 @@ export default function RekapPage() {
       volume_kg: String(row.volume_kg ?? 0),
       area_nama: row.area_nama ?? AREA_OPTIONS[0],
       keterangan: row.keterangan ?? KETERANGAN_OPTIONS[0],
-      opname_p: row.opname_p ? String(row.opname_p) : "",
-      opname_l: row.opname_l ? String(row.opname_l) : "",
+      opname_catatan: row.opname_catatan ?? "",
     });
     setFormError(null);
     setModalOpen(true);
@@ -160,7 +160,6 @@ export default function RekapPage() {
     }
 
     if (editingId) {
-      // Edit: hanya perbarui baris ini sendiri (tidak membuat ulang pasangan Heavy Patches/Double Coat).
       const existing = rows.find((r) => r.id === editingId);
       if (!existing) { setModalOpen(false); return; }
       const payload: Partial<WorkRecord> = {
@@ -174,8 +173,7 @@ export default function RekapPage() {
         volume_kg: existing.kategori === "tambalan" ? parseFloat(form.volume_kg || "0") : 0,
         area_nama: form.area_nama,
         keterangan: form.keterangan,
-        opname_p: parseFloat(form.opname_p || "0"),
-        opname_l: parseFloat(form.opname_l || "0"),
+        opname_catatan: form.opname_catatan.trim() || null,
       };
       await supabase.from("work_records").update(payload).eq("id", editingId);
     } else {
@@ -191,8 +189,8 @@ export default function RekapPage() {
         remark_pekerjaan: form.remark_pekerjaan,
         panjang_override: isTambalanForm ? parseFloat(form.panjang_tambalan) : null,
         volume_kg: isTambalanForm ? parseFloat(form.volume_kg || "0") : 0,
-        opname_p: parseFloat(form.opname_p || "0"),
-        opname_l: parseFloat(form.opname_l || "0"),
+        in_database: false,
+        opname_catatan: form.opname_catatan,
       });
       if (generated.length === 0) { setFormError("Jenis pekerjaan tidak dikenali."); return; }
       await supabase.from("work_records").insert(generated);
@@ -211,11 +209,10 @@ export default function RekapPage() {
   const exportRows = rowsForTab.map((r) => [
     formatDateID(r.work_date),
     r.kategori === "tambalan" ? r.km_start : `${r.km_start} - ${r.km_finish}`,
-    formatNumberID(rowPanjang(r), 1),
-    formatNumberID(r.lebar, 1),
-    formatNumberID(rowArea(r), 1),
+    formatNumberID(rowPanjang(r), 1), formatNumberID(r.lebar, 1), formatNumberID(rowArea(r), 1),
     r.line, r.area_nama ?? "-", r.keterangan ?? "-", r.remark_pekerjaan,
     r.kategori === "tambalan" ? formatNumberID(r.volume_kg, 1) : "-",
+    r.opname_catatan ?? "-",
   ]);
 
   return (
@@ -223,17 +220,19 @@ export default function RekapPage() {
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
           <h1 className="text-lg font-semibold text-graphite-900">Rekap Pekerjaan</h1>
-          <p className="text-sm text-gray-500">Input pekerjaan perawatan bulan berjalan. Pilih Jenis Pekerjaan, sisanya otomatis.</p>
+          <p className="text-sm text-gray-500">
+            Periode: <strong>{formatPeriodeLabel(periodeRange)}</strong>. Data di sini khusus Rekap Pekerjaan — tidak otomatis masuk ke Database.
+          </p>
         </div>
         <div className="flex items-end gap-3">
-          <Field label="Periode">
-            <Input type="month" value={periode} onChange={(e) => setPeriode(e.target.value)} />
+          <Field label="Pilih Tanggal (periode)">
+            <Input type="date" value={anchorDate} onChange={(e) => setAnchorDate(e.target.value)} />
           </Field>
           {tab !== "periode" && (
             <ExportButtons
-              filename={`rekap-${tab}-${mitra}-${periode}`}
-              title={`Rekap ${REKAP_KATEGORI_LABEL[tab as RekapKategori]} ${mitra.toUpperCase()} - ${periode}`}
-              columns={["Tgl", "KM", "Panjang (m)", "Lebar (m)", "Luas (m2)", "Line", "Area", "Keterangan", "Remark", "Volume (kg)"]}
+              filename={`rekap-${tab}-${mitra}-${periodeRange.start}`}
+              title={`Rekap ${REKAP_KATEGORI_LABEL[tab as RekapKategori]} ${mitra.toUpperCase()} - ${formatPeriodeLabel(periodeRange)}`}
+              columns={["Tgl", "KM", "Panjang (m)", "Lebar (m)", "Luas (m2)", "Line", "Area", "Keterangan", "Remark", "Volume (kg)", "Temuan Opname"]}
               rows={exportRows}
             />
           )}
@@ -257,7 +256,7 @@ export default function RekapPage() {
 
       {tab === "periode" ? (
         <div className="rounded-lg border border-gray-200 bg-white p-4">
-          <h3 className="mb-3 text-sm font-semibold text-graphite-900">Ringkasan Bulan {periode}</h3>
+          <h3 className="mb-3 text-sm font-semibold text-graphite-900">Ringkasan Periode {formatPeriodeLabel(periodeRange)}</h3>
           <div className="grid grid-cols-2 gap-3 md:grid-cols-5">
             {(Object.keys(REKAP_KATEGORI_LABEL) as RekapKategori[]).map((k) => (
               <div key={k} className="rounded-md bg-asphalt-50 p-3">
@@ -276,7 +275,7 @@ export default function RekapPage() {
                 <th>Tgl</th><th>KM</th><th>Panjang (m)</th><th>Lebar (m)</th><th>Luas (m²)</th>
                 <th>Line</th><th>Area</th><th>Keterangan</th><th>Remark</th>
                 {tab === "tambalan" && <th>Volume (kg)</th>}
-                {(rows.some((r) => r.opname_p > 0 || r.opname_l > 0)) && <th>Temuan Opname (m²)</th>}
+                {rows.some((r) => r.opname_catatan) && <th>Temuan Opname</th>}
                 <th></th>
               </tr>
             </thead>
@@ -297,9 +296,7 @@ export default function RekapPage() {
                   <td>{r.keterangan ?? "-"}</td>
                   <td>{r.remark_pekerjaan}</td>
                   {tab === "tambalan" && <td>{formatNumberID(r.volume_kg, 1)}</td>}
-                  {(rows.some((x) => x.opname_p > 0 || x.opname_l > 0)) && (
-                    <td>{r.opname_p > 0 || r.opname_l > 0 ? formatNumberID(r.opname_p * r.opname_l, 1) : "-"}</td>
-                  )}
+                  {rows.some((x) => x.opname_catatan) && <td className="max-w-[200px] truncate">{r.opname_catatan ?? "-"}</td>}
                   <td className="space-x-2">
                     <button className="text-signal-blue hover:underline" onClick={() => openEdit(r)}>Ubah</button>
                     <button className="text-signal-red hover:underline" onClick={() => handleDelete(r.id)}>Hapus</button>
@@ -331,7 +328,7 @@ export default function RekapPage() {
 
             {(form.remark_pekerjaan === "Recycling" || form.remark_pekerjaan === "Upgrading") && !editingId && (
               <p className="rounded-md bg-amber-500/10 px-3 py-2 text-xs text-amber-700">
-                Jenis ini otomatis membuat 2 baris: Heavy Patches ({form.remark_pekerjaan === "Recycling" ? "Recycling" : "Upgrading"}) dengan panjang sesuai KM, dan Double Coat dengan KM Finish otomatis ditambah {2} m (overlap).
+                Otomatis membuat 2 baris: Heavy Patches ({form.remark_pekerjaan}) sesuai KM asli, dan Double Coat dengan KM Start -1m & KM Finish +1m (overlap).
               </p>
             )}
 
@@ -378,13 +375,14 @@ export default function RekapPage() {
               </Field>
             </div>
 
-            <div className="space-y-2 rounded-md border border-gray-200 p-3">
-              <p className="text-xs font-semibold text-gray-500">Temuan Opname (opsional)</p>
-              <div className="grid grid-cols-2 gap-3">
-                <Input type="number" step="0.1" placeholder="Panjang (m)" value={form.opname_p} onChange={(e) => setForm({ ...form, opname_p: e.target.value })} />
-                <Input type="number" step="0.1" placeholder="Lebar (m)" value={form.opname_l} onChange={(e) => setForm({ ...form, opname_l: e.target.value })} />
-              </div>
-            </div>
+            <Field label="Temuan Opname (opsional - tulis catatan bila ada temuan di lapangan)">
+              <textarea
+                className="min-h-[70px] rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-graphite-700 focus:outline-none focus:ring-1 focus:ring-graphite-700"
+                placeholder="Contoh: ditemukan retak buaya di KM 10+080, perlu tindak lanjut..."
+                value={form.opname_catatan}
+                onChange={(e) => setForm({ ...form, opname_catatan: e.target.value })}
+              />
+            </Field>
 
             {formError && <p className="text-sm text-signal-red">{formError}</p>}
             <div className="flex justify-end gap-2 pt-2">
