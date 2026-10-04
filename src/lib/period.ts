@@ -49,3 +49,8 @@ export function formatPeriodeLabel(range: PeriodeRange): string {
     new Intl.DateTimeFormat("id-ID", { day: "2-digit", month: "short", year: "numeric" }).format(new Date(s + "T00:00:00"));
   return `${fmt(range.start)} – ${fmt(range.end)}`;
 }
+
+/** Sama seperti formatPeriodeLabel, tapi menerima tanggal awal/akhir bebas (bukan dari periodeRangeFromDate). */
+export function formatDateRangeLabel(start: string, end: string): string {
+  return formatPeriodeLabel({ start, end });
+}

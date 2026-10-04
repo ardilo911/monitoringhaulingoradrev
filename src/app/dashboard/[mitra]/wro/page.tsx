@@ -6,7 +6,7 @@ import { supabase } from "@/lib/supabaseClient";
 import { useSession } from "@/lib/useSession";
 import { chainageToMeters, isValidChainage, segmentLength } from "@/lib/chainage";
 import { formatNumberID } from "@/lib/format";
-import { periodeRangeFromDate, formatPeriodeLabel } from "@/lib/period";
+import { periodeRangeFromDate, formatDateRangeLabel } from "@/lib/period";
 import { WRO_WORK_ITEMS, LINES, type Wro, type Mitra, type WorkItem, type LineType, type WroStatus } from "@/lib/types";
 import { Button } from "@/components/ui/Button";
 import { Input, Select, Field } from "@/components/ui/Input";
@@ -36,8 +36,10 @@ export default function WroPage() {
   const { profile } = useSession();
   const isAdmin = profile?.role === "admin";
 
-  const [anchorDate, setAnchorDate] = useState(todayStr());
-  const periodeRange = useMemo(() => periodeRangeFromDate(anchorDate), [anchorDate]);
+  const defaultRange = useMemo(() => periodeRangeFromDate(todayStr()), []);
+  const [tglAwal, setTglAwal] = useState(defaultRange.start);
+  const [tglAkhir, setTglAkhir] = useState(defaultRange.end);
+  const periodeRange = { start: tglAwal, end: tglAkhir };
   const [rows, setRows] = useState<Wro[]>([]);
   const [loading, setLoading] = useState(true);
   const [modalOpen, setModalOpen] = useState(false);
@@ -47,13 +49,14 @@ export default function WroPage() {
 
   async function load() {
     setLoading(true);
-    const { data } = await supabase
+    const { data, error } = await supabase
       .from("wro")
       .select("*")
       .eq("mitra", mitra)
       .gte("tgl_submit", periodeRange.start)
       .lte("tgl_submit", periodeRange.end)
       .order("tgl_submit", { ascending: false });
+    if (error) console.error("Gagal memuat WRO:", error.message);
     setRows((data as Wro[]) ?? []);
     setLoading(false);
   }
@@ -79,7 +82,7 @@ export default function WroPage() {
 
   function openAdd() {
     setEditingId(null);
-    setForm({ ...emptyForm, tgl_submit: anchorDate });
+    setForm({ ...emptyForm, tgl_submit: todayStr() });
     setFormError(null);
     setModalOpen(true);
   }
@@ -157,9 +160,11 @@ export default function WroPage() {
     }
 
     if (editingId) {
-      await supabase.from("wro").update(payload).eq("id", editingId);
+      const { error } = await supabase.from("wro").update(payload).eq("id", editingId);
+      if (error) { setFormError(`Gagal menyimpan: ${error.message}`); return; }
     } else {
-      await supabase.from("wro").insert(payload);
+      const { error } = await supabase.from("wro").insert(payload);
+      if (error) { setFormError(`Gagal menyimpan: ${error.message}`); return; }
     }
     setModalOpen(false);
     load();
@@ -167,7 +172,8 @@ export default function WroPage() {
 
   async function handleDelete(id: string) {
     if (!confirm("Hapus baris WRO ini?")) return;
-    await supabase.from("wro").delete().eq("id", id);
+    const { error } = await supabase.from("wro").delete().eq("id", id);
+    if (error) { alert(`Gagal menghapus: ${error.message}`); return; }
     load();
   }
 
@@ -192,17 +198,20 @@ export default function WroPage() {
         <div>
           <h1 className="text-lg font-semibold text-graphite-900">Work Request Order</h1>
           <p className="text-sm text-gray-500">
-            Pengajuan pekerjaan perawatan hauling road. Periode: <strong>{formatPeriodeLabel(periodeRange)}</strong>.
+            Pengajuan pekerjaan perawatan hauling road. Menampilkan: <strong>{formatDateRangeLabel(tglAwal, tglAkhir)}</strong>.
             {!isAdmin && " Status & tanggal approve ditentukan oleh Admin."}
           </p>
         </div>
         <div className="flex items-end gap-3">
-          <Field label="Pilih Tanggal (periode)">
-            <Input type="date" value={anchorDate} onChange={(e) => setAnchorDate(e.target.value)} />
+          <Field label="Tanggal Awal">
+            <Input type="date" value={tglAwal} onChange={(e) => setTglAwal(e.target.value)} />
+          </Field>
+          <Field label="Tanggal Akhir">
+            <Input type="date" value={tglAkhir} onChange={(e) => setTglAkhir(e.target.value)} />
           </Field>
           <ExportButtons
             filename={`wro-${mitra}-${periodeRange.start}`}
-            title={`WRO ${mitra.toUpperCase()} - ${formatPeriodeLabel(periodeRange)}`}
+            title={`WRO ${mitra.toUpperCase()} - ${formatDateRangeLabel(tglAwal, tglAkhir)}`}
             columns={["No WRO", "Submit", "Approve", "Status", "KM Start", "KM Finish", "Line", "Panjang (m)", "Lebar (m)", "Luasan (m2)", "Work Item"]}
             rows={exportRows}
           />

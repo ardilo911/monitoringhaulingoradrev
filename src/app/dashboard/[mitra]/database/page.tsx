@@ -7,7 +7,7 @@ import { useSession } from "@/lib/useSession";
 import { formatNumberID, formatDateID } from "@/lib/format";
 import { isValidChainage, chainageToMeters, segmentLength } from "@/lib/chainage";
 import { generateDatabaseRow, rowPanjang, rowArea } from "@/lib/workGeneration";
-import { periodeRangeFromDate, formatPeriodeLabel, lastNPeriodeRanges } from "@/lib/period";
+import { periodeRangeFromDate, formatDateRangeLabel } from "@/lib/period";
 import {
   WORK_ITEMS,
   LINES,
@@ -57,11 +57,17 @@ export default function DatabasePage() {
   const { profile } = useSession();
   const isAdmin = profile?.role === "admin";
 
-  const [anchorDate, setAnchorDate] = useState(todayStr());
-  const periods = useMemo(() => lastNPeriodeRanges(anchorDate, 6), [anchorDate]);
-  const rangeStart = periods[0].start;
-  const rangeEnd = periods[periods.length - 1].end;
-  const currentPeriodeRange = useMemo(() => periodeRangeFromDate(anchorDate), [anchorDate]);
+  const defaultRange = useMemo(() => {
+    const current = periodeRangeFromDate(todayStr());
+    // Default: 6 periode ke belakang s.d hari ini, supaya perilaku awal mirip sebelumnya.
+    const start = new Date(current.start + "T00:00:00");
+    start.setMonth(start.getMonth() - 5);
+    return { start: start.toISOString().slice(0, 10), end: current.end };
+  }, []);
+  const [tglAwal, setTglAwal] = useState(defaultRange.start);
+  const [tglAkhir, setTglAkhir] = useState(defaultRange.end);
+  const rangeStart = tglAwal;
+  const rangeEnd = tglAkhir;
 
   const [tab, setTab] = useState<(typeof KATEGORI_TABS)[number]>("periode");
   const [rows, setRows] = useState<WorkRecord[]>([]);
@@ -74,7 +80,7 @@ export default function DatabasePage() {
 
   async function load() {
     setLoading(true);
-    const { data } = await supabase
+    const { data, error } = await supabase
       .from("work_records")
       .select("*")
       .eq("mitra", mitra)
@@ -82,6 +88,7 @@ export default function DatabasePage() {
       .gte("work_date", rangeStart)
       .lte("work_date", rangeEnd)
       .order("work_date", { ascending: false });
+    if (error) console.error("Gagal memuat Database:", error.message);
     setRows((data as WorkRecord[]) ?? []);
     setLoading(false);
   }
@@ -112,7 +119,7 @@ export default function DatabasePage() {
 
   function openAdd() {
     setEditingId(null);
-    setForm({ ...emptyForm, work_date: anchorDate });
+    setForm({ ...emptyForm, work_date: todayStr() });
     setFormError(null);
     setModalOpen(true);
   }
@@ -164,7 +171,8 @@ export default function DatabasePage() {
         area_nama: form.area_nama,
         keterangan: form.keterangan,
       };
-      await supabase.from("work_records").update(payload).eq("id", editingId);
+      const { error } = await supabase.from("work_records").update(payload).eq("id", editingId);
+      if (error) { setFormError(`Gagal menyimpan: ${error.message}`); return; }
     } else {
       const generated = generateDatabaseRow({
         mitra,
@@ -180,7 +188,8 @@ export default function DatabasePage() {
         volume_kg: isTambalanForm ? parseFloat(form.volume_kg || "0") : 0,
         in_database: true,
       });
-      await supabase.from("work_records").insert(generated);
+      const { error } = await supabase.from("work_records").insert(generated);
+      if (error) { setFormError(`Gagal menyimpan: ${error.message}`); return; }
     }
     setModalOpen(false);
     load();
@@ -188,7 +197,8 @@ export default function DatabasePage() {
 
   async function handleDelete(id: string) {
     if (!confirm("Hapus baris pekerjaan ini dari Database? Ini bisa memengaruhi perhitungan koreksi retensi di BAST.")) return;
-    await supabase.from("work_records").delete().eq("id", id);
+    const { error } = await supabase.from("work_records").delete().eq("id", id);
+    if (error) { alert(`Gagal menghapus: ${error.message}`); return; }
     load();
   }
 
@@ -206,12 +216,15 @@ export default function DatabasePage() {
           <h1 className="text-lg font-semibold text-graphite-900">Database</h1>
           <p className="text-sm text-gray-500">
             Basis koreksi retensi untuk BAST — data terpisah dari Rekap Pekerjaan, diinput manual oleh Admin.
-            6 periode terakhir s.d {formatPeriodeLabel(currentPeriodeRange)}.
+            Menampilkan: <strong>{formatDateRangeLabel(tglAwal, tglAkhir)}</strong>.
           </p>
         </div>
         <div className="flex items-end gap-3">
-          <Field label="Pilih Tanggal (periode akhir)">
-            <Input type="date" value={anchorDate} onChange={(e) => setAnchorDate(e.target.value)} />
+          <Field label="Tanggal Awal">
+            <Input type="date" value={tglAwal} onChange={(e) => setTglAwal(e.target.value)} />
+          </Field>
+          <Field label="Tanggal Akhir">
+            <Input type="date" value={tglAkhir} onChange={(e) => setTglAkhir(e.target.value)} />
           </Field>
           {tab !== "periode" && (
             <ExportButtons
@@ -241,7 +254,7 @@ export default function DatabasePage() {
 
       {tab === "periode" ? (
         <div className="rounded-lg border border-gray-200 bg-white p-4">
-          <h3 className="mb-3 text-sm font-semibold text-graphite-900">Ringkasan 6 Periode Terakhir</h3>
+          <h3 className="mb-3 text-sm font-semibold text-graphite-900">Ringkasan {formatDateRangeLabel(tglAwal, tglAkhir)}</h3>
           <div className="grid grid-cols-2 gap-3 md:grid-cols-5">
             {(Object.keys(REKAP_KATEGORI_LABEL) as RekapKategori[]).map((k) => (
               <div key={k} className="rounded-md bg-asphalt-50 p-3">

@@ -4,7 +4,8 @@ import { useEffect, useMemo, useState } from "react";
 import { useParams } from "next/navigation";
 import { supabase } from "@/lib/supabaseClient";
 import { formatNumberID, formatDateID } from "@/lib/format";
-import { periodeRangeFromDate, formatPeriodeLabel, shiftPeriode } from "@/lib/period";
+import { periodeRangeFromDate, formatDateRangeLabel } from "@/lib/period";
+import { addMonths } from "@/lib/retention";
 import { rowArea } from "@/lib/workGeneration";
 import { calculateRetentionCorrection, type CorrectionResult } from "@/lib/retention";
 import { REKAP_KATEGORI_LABEL, type WorkRecord, type Mitra, type Bast } from "@/lib/types";
@@ -52,14 +53,17 @@ export default function BastPage() {
   const params = useParams<{ mitra: string }>();
   const mitra = params.mitra as Mitra;
 
-  const [anchorDate, setAnchorDate] = useState(todayStr());
-  const periodeRange = useMemo(() => periodeRangeFromDate(anchorDate), [anchorDate]);
+  const defaultRange = useMemo(() => periodeRangeFromDate(todayStr()), []);
+  const [tglAwal, setTglAwal] = useState(defaultRange.start);
+  const [tglAkhir, setTglAkhir] = useState(defaultRange.end);
+  const periodeRange = { start: tglAwal, end: tglAkhir };
   const [retentionMonths, setRetentionMonths] = useState(6);
   const [newRecords, setNewRecords] = useState<WorkRecord[]>([]);
   const [dbRecords, setDbRecords] = useState<WorkRecord[]>([]);
   const [bastRow, setBastRow] = useState<Bast | null>(null);
   const [loading, setLoading] = useState(true);
   const [drillDown, setDrillDown] = useState<RowResult | null>(null);
+  const [saveError, setSaveError] = useState<string | null>(null);
 
   async function load() {
     setLoading(true);
@@ -79,12 +83,9 @@ export default function BastPage() {
     if (newErr) console.error("Gagal memuat Rekap Pekerjaan:", newErr.message);
     setNewRecords((newData as WorkRecord[]) ?? []);
 
-    // Basis retensi: dari Database (in_database=true), mundur (retentionMonths) bulan dari awal periode.
-    const dbRangeStartPeriode = shiftPeriode(periodeRange, -(months + 1));
-    const dbRangeStart = dbRangeStartPeriode.start;
-    const dbRangeEndDate = new Date(periodeRange.start + "T00:00:00");
-    dbRangeEndDate.setDate(dbRangeEndDate.getDate() - 1);
-    const dbRangeEnd = dbRangeEndDate.toISOString().slice(0, 10);
+    // Basis retensi: dari Database (in_database=true), mundur (retentionMonths + buffer) bulan dari Tanggal Awal.
+    const dbRangeStart = addMonths(periodeRange.start, -(months + 1)).toISOString().slice(0, 10);
+    const dbRangeEnd = periodeRange.end;
 
     const { data: dbData, error: dbErr } = await supabase
       .from("work_records")
@@ -138,15 +139,21 @@ export default function BastPage() {
   const isLocked = bastRow?.status === "Final";
 
   async function handleSaveDraft() {
-    await supabase.from("bast").upsert({ mitra, periode: periodeRange.start, total_per_work_item: totalsPerBucket, status: "Draft" as const }, { onConflict: "mitra,periode" });
+    setSaveError(null);
+    const { error } = await supabase
+      .from("bast")
+      .upsert({ mitra, periode: periodeRange.start, total_per_work_item: totalsPerBucket, status: "Draft" as const }, { onConflict: "mitra,periode" });
+    if (error) { setSaveError(`Gagal menyimpan draft: ${error.message}`); return; }
     load();
   }
 
   async function handleFinalize() {
     if (!confirm("Finalisasi BAST periode ini? Data tidak dapat diubah setelah difinalkan.")) return;
-    await supabase
+    setSaveError(null);
+    const { error } = await supabase
       .from("bast")
       .upsert({ mitra, periode: periodeRange.start, total_per_work_item: totalsPerBucket, status: "Final", locked_at: new Date().toISOString() }, { onConflict: "mitra,periode" });
+    if (error) { setSaveError(`Gagal finalisasi: ${error.message}`); return; }
     load();
   }
 
@@ -162,16 +169,19 @@ export default function BastPage() {
         <div>
           <h1 className="text-lg font-semibold text-graphite-900">BAST</h1>
           <p className="text-sm text-gray-500">
-            Periode: <strong>{formatPeriodeLabel(periodeRange)}</strong>. Koreksi retensi {retentionMonths} bulan, dicek berdasarkan Keterangan + Area + Line yang sama.
+            Menampilkan: <strong>{formatDateRangeLabel(tglAwal, tglAkhir)}</strong>. Koreksi retensi {retentionMonths} bulan, dicek berdasarkan Keterangan + Area + Line yang sama.
           </p>
         </div>
         <div className="flex items-end gap-3">
-          <Field label="Pilih Tanggal (periode)">
-            <Input type="date" value={anchorDate} onChange={(e) => setAnchorDate(e.target.value)} />
+          <Field label="Tanggal Awal">
+            <Input type="date" value={tglAwal} onChange={(e) => setTglAwal(e.target.value)} />
+          </Field>
+          <Field label="Tanggal Akhir">
+            <Input type="date" value={tglAkhir} onChange={(e) => setTglAkhir(e.target.value)} />
           </Field>
           <ExportButtons
             filename={`bast-${mitra}-${periodeRange.start}`}
-            title={`BAST ${mitra.toUpperCase()} - ${formatPeriodeLabel(periodeRange)}`}
+            title={`BAST ${mitra.toUpperCase()} - ${formatDateRangeLabel(tglAwal, tglAkhir)}`}
             columns={["Tgl", "KM Start", "KM Finish", "Line", "Kategori", "Bucket BAST", "Area", "Keterangan", "Luas Sebelum (m2)", "Luas Dikoreksi (m2)", "Luas Dapat Dibayar (m2)"]}
             rows={exportRows}
           />
@@ -182,6 +192,7 @@ export default function BastPage() {
         {bastRow ? <Badge tone={bastRow.status === "Final" ? "green" : "amber"}>{bastRow.status}</Badge> : <Badge tone="neutral">Belum dibuat</Badge>}
         <Button variant="secondary" onClick={handleSaveDraft} disabled={isLocked}>Simpan Draft</Button>
         <Button onClick={handleFinalize} disabled={isLocked}>{isLocked ? "Sudah Final" : "Finalisasi"}</Button>
+        {saveError && <span className="text-sm text-signal-red">{saveError}</span>}
       </div>
 
       <div className="scroll-x rounded-lg border border-gray-200 bg-white">
