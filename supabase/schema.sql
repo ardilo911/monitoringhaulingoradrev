@@ -65,15 +65,34 @@ do $$ begin
   end if;
 end $$;
 
--- Trigger: bikin baris profile otomatis saat user baru dibuat di Supabase Auth
+-- Trigger: bikin baris profile otomatis saat user baru dibuat di Supabase Auth.
+-- Username default dibuat dari SELURUH alamat email (bukan cuma sebelum "@"), supaya
+-- admin@wasco.com dan admin@khs.com tidak saling bentrok (keduanya sama-sama "admin"
+-- kalau cuma diambil dari sebelum "@"). Kalau masih bentrok juga (sangat jarang), tambahkan
+-- angka di belakangnya secara otomatis.
 create or replace function public.handle_new_user()
 returns trigger as $$
+declare
+  base_username text;
+  final_username text;
+  suffix int := 0;
 begin
+  base_username := coalesce(
+    new.raw_user_meta_data->>'username',
+    regexp_replace(lower(new.email), '[^a-z0-9]+', '_', 'g')
+  );
+  final_username := base_username;
+
+  while exists (select 1 from public.profiles where username = final_username) loop
+    suffix := suffix + 1;
+    final_username := base_username || '_' || suffix;
+  end loop;
+
   insert into public.profiles (id, email, username, nama, role, akses_mitra)
   values (
     new.id,
     new.email,
-    coalesce(new.raw_user_meta_data->>'username', split_part(new.email, '@', 1)),
+    final_username,
     coalesce(new.raw_user_meta_data->>'nama', split_part(new.email, '@', 1)),
     'user',
     '{}'

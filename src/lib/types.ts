@@ -33,7 +33,7 @@ export const WRO_WORK_ITEMS: WorkItem[] = ["Recycling", "Reseal 1 Coat", "Reseal
 
 export const LINES: LineType[] = ["UL", "LL", "LL1", "LL2"];
 
-export const AREA_OPTIONS = ["LW", "HW", "PL", "WCC", "North"] as const;
+export const AREA_OPTIONS = ["-", "LW", "HW", "PL", "WCC", "North"] as const;
 export type AreaOption = (typeof AREA_OPTIONS)[number];
 
 export const KETERANGAN_OPTIONS = ["Area 1", "Area 2"] as const;
