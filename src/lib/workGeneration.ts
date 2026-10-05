@@ -111,9 +111,11 @@ export function generateWorkRows(input: JobInput): GeneratedRow[] {
       rows = [];
   }
 
-  // Temuan Opname (opsional) ditempel hanya di baris pertama supaya tidak dobel.
-  if (rows.length > 0 && input.opname_catatan && input.opname_catatan.trim() !== "") {
-    rows[0] = { ...rows[0], opname_catatan: input.opname_catatan.trim() };
+  // Temuan Opname (opsional) ditempel di SEMUA baris yang dihasilkan (Heavy Patches maupun
+  // Double Coat-nya), supaya catatan temuan lapangan selalu ikut muncul di kedua kategori.
+  if (input.opname_catatan && input.opname_catatan.trim() !== "") {
+    const catatan = input.opname_catatan.trim();
+    rows = rows.map((r) => ({ ...r, opname_catatan: catatan }));
   }
 
   return rows;
@@ -130,45 +132,11 @@ export function rowArea(r: { kategori: RekapKategori; km_start: string; km_finis
   return rowPanjang(r) * r.lebar;
 }
 
-/** Kategori tunggal untuk satu Work Item - dipakai di halaman Database (TIDAK dipecah 2 baris). */
-export function singleKategoriForRemark(remark: WorkItem): RekapKategori {
-  switch (remark) {
-    case "Recycling":
-      return "heavy_patches_recycling";
-    case "Upgrading":
-      return "heavy_patches_upgrading";
-    case "Reseal 2 Coat":
-    case "Reseal Selected":
-      return "double_coat";
-    case "Reseal 1 Coat":
-      return "reseal_1_coat";
-    case "Tambalan":
-    default:
-      return "tambalan";
-  }
-}
-
 /**
- * Untuk halaman Database: 1 input = 1 baris saja (TIDAK auto-split Heavy Patches + Double Coat).
- * Database adalah data pembanding retensi berdiri sendiri, dicocokkan ke Rekap Pekerjaan lewat
- * Keterangan + Area + Line + overlap KM + tanggal (lihat lib/retention.ts) - bukan lewat kategori.
+ * Untuk halaman Database: SAMA PERSIS dengan generateWorkRows (Recycling/Upgrading tetap
+ * otomatis jadi 2 baris: Heavy Patches + Double Coat), hanya saja ditandai in_database=true
+ * sehingga tidak tercampur dengan data Rekap Pekerjaan bulan berjalan.
  */
-export function generateDatabaseRow(input: JobInput): GeneratedRow {
-  const kmFinish = input.remark_pekerjaan === "Tambalan" ? input.km_start : input.km_finish;
-  return {
-    mitra: input.mitra,
-    work_date: input.work_date,
-    kategori: singleKategoriForRemark(input.remark_pekerjaan),
-    km_start: input.km_start,
-    km_finish: kmFinish,
-    line: input.line,
-    lebar: input.lebar,
-    panjang_override: input.remark_pekerjaan === "Tambalan" ? (input.panjang_override ?? 0) : null,
-    volume_kg: input.remark_pekerjaan === "Tambalan" ? (input.volume_kg ?? 0) : 0,
-    area_nama: input.area_nama,
-    keterangan: input.keterangan,
-    remark_pekerjaan: input.remark_pekerjaan,
-    in_database: true,
-    opname_catatan: null,
-  };
+export function generateDatabaseRows(input: JobInput): GeneratedRow[] {
+  return generateWorkRows({ ...input, in_database: true });
 }

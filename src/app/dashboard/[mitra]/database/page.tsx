@@ -6,7 +6,7 @@ import { supabase } from "@/lib/supabaseClient";
 import { useSession } from "@/lib/useSession";
 import { formatNumberID, formatDateID } from "@/lib/format";
 import { isValidChainage, chainageToMeters, segmentLength } from "@/lib/chainage";
-import { generateDatabaseRow, rowPanjang, rowArea } from "@/lib/workGeneration";
+import { generateWorkRows, rowPanjang, rowArea } from "@/lib/workGeneration";
 import { periodeRangeFromDate, formatDateRangeLabel } from "@/lib/period";
 import {
   WORK_ITEMS,
@@ -49,6 +49,7 @@ const emptyForm = {
   volume_kg: "",
   area_nama: AREA_OPTIONS[0] as string,
   keterangan: KETERANGAN_OPTIONS[0] as string,
+  opname_catatan: "",
 };
 
 export default function DatabasePage() {
@@ -137,6 +138,7 @@ export default function DatabasePage() {
       volume_kg: String(row.volume_kg ?? 0),
       area_nama: row.area_nama ?? AREA_OPTIONS[0],
       keterangan: row.keterangan ?? KETERANGAN_OPTIONS[0],
+      opname_catatan: row.opname_catatan ?? "",
     });
     setFormError(null);
     setModalOpen(true);
@@ -170,11 +172,12 @@ export default function DatabasePage() {
         volume_kg: existing.kategori === "tambalan" ? parseFloat(form.volume_kg || "0") : 0,
         area_nama: form.area_nama,
         keterangan: form.keterangan,
+        opname_catatan: form.opname_catatan.trim() || null,
       };
       const { error } = await supabase.from("work_records").update(payload).eq("id", editingId);
       if (error) { setFormError(`Gagal menyimpan: ${error.message}`); return; }
     } else {
-      const generated = generateDatabaseRow({
+      const generated = generateWorkRows({
         mitra,
         work_date: form.work_date,
         km_start: form.km_start,
@@ -187,6 +190,7 @@ export default function DatabasePage() {
         panjang_override: isTambalanForm ? parseFloat(form.panjang_tambalan) : null,
         volume_kg: isTambalanForm ? parseFloat(form.volume_kg || "0") : 0,
         in_database: true,
+        opname_catatan: form.opname_catatan,
       });
       const { error } = await supabase.from("work_records").insert(generated);
       if (error) { setFormError(`Gagal menyimpan: ${error.message}`); return; }
@@ -272,6 +276,7 @@ export default function DatabasePage() {
                 <th>Tgl</th><th>KM</th><th>Panjang (m)</th><th>Lebar (m)</th><th>Luas (m²)</th>
                 <th>Line</th><th>Area</th><th>Keterangan</th><th>Remark</th>
                 {tab === "tambalan" && <th>Volume (kg)</th>}
+                {rows.some((r) => r.opname_catatan) && <th>Temuan Opname</th>}
                 {isAdmin && <th></th>}
               </tr>
             </thead>
@@ -292,6 +297,7 @@ export default function DatabasePage() {
                   <td>{r.keterangan ?? "-"}</td>
                   <td>{r.remark_pekerjaan}</td>
                   {tab === "tambalan" && <td>{formatNumberID(r.volume_kg, 1)}</td>}
+                  {rows.some((x) => x.opname_catatan) && <td className="max-w-[200px] truncate">{r.opname_catatan ?? "-"}</td>}
                   {isAdmin && (
                     <td className="space-x-2">
                       <button className="text-signal-blue hover:underline" onClick={() => openEdit(r)}>Ubah</button>
@@ -318,12 +324,6 @@ export default function DatabasePage() {
                 </Select>
               </Field>
             </div>
-
-            {!editingId && (
-              <p className="rounded-md bg-asphalt-50 px-3 py-2 text-xs text-gray-500">
-                Data Database tersimpan sebagai satu baris tunggal (tidak dipecah Heavy Patches/Double Coat) — dicocokkan ke Rekap Pekerjaan lewat Keterangan, Area, Line, KM, dan tanggal.
-              </p>
-            )}
 
             {isTambalanForm ? (
               <div className="grid grid-cols-2 gap-3">
@@ -366,6 +366,16 @@ export default function DatabasePage() {
                 </Select>
               </Field>
             </div>
+
+            <Field label="Temuan Opname (opsional - tulis catatan bila ada temuan di lapangan)">
+              <textarea
+                className="rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-graphite-700 focus:outline-none focus:ring-1 focus:ring-graphite-700"
+                rows={2}
+                placeholder="Contoh: ditemukan retak buaya di KM 10+080, perlu tindak lanjut..."
+                value={form.opname_catatan}
+                onChange={(e) => setForm({ ...form, opname_catatan: e.target.value })}
+              />
+            </Field>
 
             {formError && <p className="text-sm text-signal-red">{formError}</p>}
             <div className="flex justify-end gap-2 pt-2">
