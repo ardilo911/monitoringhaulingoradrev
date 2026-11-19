@@ -1,9 +1,7 @@
-import { chainageToMeters, shiftChainage } from "./chainage";
+import { chainageToMeters } from "./chainage";
 import type { WorkItem, LineType, RekapKategori, Mitra } from "./types";
 
-/** Overlap Double Coat: diperpanjang 1m di KM Start (mundur) dan 1m di KM Finish (maju). */
-export const DOUBLE_COAT_OVERLAP_START_M = 1;
-export const DOUBLE_COAT_OVERLAP_FINISH_M = 1;
+
 
 export interface JobInput {
   mitra: Mitra;
@@ -38,12 +36,7 @@ export interface GeneratedRow {
   opname_catatan: string | null;
 }
 
-/**
- * Dari satu input pekerjaan (form Rekap Pekerjaan / Database), hasilkan baris
- * work_records yang perlu disimpan. Recycling & Upgrading menghasilkan 2 baris
- * sekaligus (Heavy Patches + Double Coat, dengan Double Coat diperpanjang 1m di
- * KM Start dan 1m di KM Finish). Jenis lain menghasilkan 1 baris.
- */
+
 export function generateWorkRows(input: JobInput): GeneratedRow[] {
   const base = {
     mitra: input.mitra,
@@ -75,21 +68,13 @@ export function generateWorkRows(input: JobInput): GeneratedRow[] {
     case "Recycling":
       rows = [
         row("heavy_patches_recycling", input.km_start, input.km_finish),
-        row(
-          "double_coat",
-          shiftChainage(input.km_start, -DOUBLE_COAT_OVERLAP_START_M),
-          shiftChainage(input.km_finish, DOUBLE_COAT_OVERLAP_FINISH_M)
-        ),
+        row("double_coat", input.km_start, input.km_finish),
       ];
       break;
     case "Upgrading":
       rows = [
         row("heavy_patches_upgrading", input.km_start, input.km_finish),
-        row(
-          "double_coat",
-          shiftChainage(input.km_start, -DOUBLE_COAT_OVERLAP_START_M),
-          shiftChainage(input.km_finish, DOUBLE_COAT_OVERLAP_FINISH_M)
-        ),
+        row("double_coat", input.km_start, input.km_finish),
       ];
       break;
     case "Reseal 2 Coat":
